@@ -1011,17 +1011,22 @@ function summarizeMissionChanges(oldMission, newMission){
     if((oldMission[f]||'') !== (newMission[f]||'')) parts.push(`${FIELD_LABEL[f]} modifié`);
   });
 
-  let notesChanged=0, commentsChanged=0;
+  let notesChanged=0, commentsChanged=0, customAdded=0, customRemoved=0;
   const oldCritById = {};
   (oldMission.grid||[]).forEach(catG=>(catG.criteres||[]).forEach(c=>{ oldCritById[c.id]=c; }));
+  const newCritIds = new Set();
   (newMission.grid||[]).forEach(catG=>(catG.criteres||[]).forEach(c=>{
+    newCritIds.add(c.id);
     const o = oldCritById[c.id];
-    if(!o) return;
+    if(!o){ if(c.custom) customAdded++; return; }
     if(o.note !== c.note) notesChanged++;
     if((o.comment||'') !== (c.comment||'')) commentsChanged++;
   }));
+  Object.values(oldCritById).forEach(o=>{ if(o.custom && !newCritIds.has(o.id)) customRemoved++; });
   if(notesChanged) parts.push(`${notesChanged} réponse${notesChanged>1?'s':''} modifiée${notesChanged>1?'s':''}`);
   if(commentsChanged) parts.push(`${commentsChanged} commentaire${commentsChanged>1?'s':''} modifié${commentsChanged>1?'s':''}`);
+  if(customAdded) parts.push(`${customAdded} question${customAdded>1?'s':''} personnalisée${customAdded>1?'s':''} ajoutée${customAdded>1?'s':''}`);
+  if(customRemoved) parts.push(`${customRemoved} question${customRemoved>1?'s':''} personnalisée${customRemoved>1?'s':''} supprimée${customRemoved>1?'s':''}`);
 
   const oldNcById = {};
   (oldMission.nonConformites||[]).forEach(n=>{ oldNcById[n.id]=n; });
@@ -1097,8 +1102,8 @@ function missionMatchesQuery(m, q){
   if(hay.includes(q)) return true;
   for(const catG of (m.grid||[])){
     for(const c of (catG.criteres||[])){
-      const info = CRITERES_INDEX[c.id];
-      if(info && info.label.toLowerCase().includes(q)) return true;
+      const label = c.custom ? c.label : (CRITERES_INDEX[c.id]||{}).label;
+      if(label && label.toLowerCase().includes(q)) return true;
       if(c.comment && c.comment.toLowerCase().includes(q)) return true;
     }
   }
@@ -1171,6 +1176,9 @@ const CHANGELOG = {
   ],
   '1.8.0': [
     "Bouton « Dupliquer » sur un audit : reprend l'entreprise, le service audité, l'auditeur et le périmètre, avec une grille vierge — pratique pour un audit de suivi chez un client déjà audité.",
+  ],
+  '1.9.0': [
+    "Possibilité d'ajouter des questions propres à un audit, en plus de la grille standard — utile pour un point spécifique à un client, sans modifier la grille commune.",
   ],
 };
 
@@ -1387,6 +1395,25 @@ const App = {
   setComment(catId, critId, val){
     const cat = this.state.draft.grid.find(c=>c.catId===catId);
     cat.criteres.find(c=>c.id===critId).comment = val;
+  },
+  /** Adds a one-off question to this specific audit's grid, for something
+   *  the standard 339-question template doesn't cover. Stored on the
+   *  mission itself (not the shared template), so it never affects other
+   *  audits — counts toward this domain's score like any other question. */
+  addCustomQuestion(catId, label){
+    label = (label||'').trim();
+    if(!label) return;
+    const cat = this.state.draft.grid.find(c=>c.catId===catId);
+    if(!cat) return;
+    cat.criteres.push({ id: uid('custom'), note:null, comment:'', custom:true, label });
+    this.render();
+  },
+  removeCustomQuestion(catId, critId, evt){
+    if(evt) evt.stopPropagation();
+    const cat = this.state.draft.grid.find(c=>c.catId===catId);
+    if(!cat) return;
+    cat.criteres = cat.criteres.filter(c=>c.id!==critId);
+    this.render();
   },
   toggleCat(catId){
     if(this.state.openCats.has(catId)) this.state.openCats.delete(catId); else this.state.openCats.add(catId);
@@ -2375,6 +2402,27 @@ const App = {
                   </div>`;
                 }).join('')}
               `).join('')}
+              ${catG.criteres.some(c=>c.custom) ? `<div class="sd-head">Questions ajoutées pour cet audit</div>` : ''}
+              ${catG.criteres.filter(c=>c.custom).map(c=>`
+                <div class="crit-row">
+                  <div class="crit-main">
+                    <div class="crit-label">${esc(c.label)} <button class="btn ghost" title="Supprimer cette question" style="padding:1px 5px; margin-left:4px; vertical-align:middle;" onclick="App.removeCustomQuestion('${cat.id}','${c.id}', event)">${icon('x',12)}</button></div>
+                    <input class="crit-comment" type="text" placeholder="Commentaire (optionnel)" value="${esc(c.comment)}" oninput="App.setComment('${cat.id}','${c.id}', this.value)"/>
+                  </div>
+                  <div class="seg">
+                    <button class="${c.note===null?'sel-na':''}" onclick="App.setNote('${cat.id}','${c.id}', null)">N/A</button>
+                    <button class="${c.note===0?'sel-0':''}" onclick="App.setNote('${cat.id}','${c.id}', 0)">Non conforme</button>
+                    <button class="${c.note===1?'sel-1':''}" onclick="App.setNote('${cat.id}','${c.id}', 1)">Partiel</button>
+                    <button class="${c.note===2?'sel-2':''}" onclick="App.setNote('${cat.id}','${c.id}', 2)">Conforme</button>
+                  </div>
+                </div>
+              `).join('')}
+              <div class="crit-row" style="align-items:center;">
+                <div class="crit-main">
+                  <input type="text" class="crit-comment" id="newq-${cat.id}" placeholder="Ajouter une question propre à cet audit…" onkeydown="if(event.key==='Enter'){ App.addCustomQuestion('${cat.id}', this.value); this.value=''; }"/>
+                </div>
+                <button class="btn ghost" onclick="const el=document.getElementById('newq-${cat.id}'); App.addCustomQuestion('${cat.id}', el.value); el.value='';">${icon('plus',15)} Ajouter</button>
+              </div>
             </div>` : ''}
           </div>`;
         }).join('')}
@@ -2518,6 +2566,12 @@ const App = {
                     </div>`;
                   }).join('')}
                 `).join('')}
+                ${catG.criteres.filter(c=>c.custom).map(c=>{
+                  const noteTxt = c.note===null ? 'N/A' : NOTE_LABELS[c.note];
+                  return `<div class="report-crit-line">
+                    <div class="txt"><b>${noteTxt}</b> — ${esc(c.label)}${c.comment?(' · '+esc(c.comment)):''}</div>
+                  </div>`;
+                }).join('')}
               </div>
             </div>`;
           }).join('')}

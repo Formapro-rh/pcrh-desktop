@@ -1264,6 +1264,9 @@ const CHANGELOG = {
     "Export PDF / impression de la fiche client (score moyen, évolution, historique des audits).",
     "Comparaison entre deux audits d'un même client : score par domaine, non-conformités résolues, nouvelles ou toujours ouvertes.",
   ],
+  '1.14.0': [
+    "Interface adaptée au tactile sur tablette : boutons, cases à cocher et champs agrandis, boutons de notation sur leur propre ligne — sans aucun changement sur ordinateur (souris/trackpad).",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */

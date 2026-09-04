@@ -383,6 +383,34 @@ tbody tr:hover td{background:var(--surface-2);}
 .settings-row .k{font-size:12.5px; color:var(--ink-2);}
 .settings-row .v{font-size:12.5px; font-family:"IBM Plex Mono",monospace; color:var(--ink);}
 
+/* ---------- Touch comfort (tablets, touchscreens) ----------
+ * `pointer: coarse` targets touch input specifically — a mouse or trackpad
+ * never matches it, so this leaves the normal desktop/laptop experience
+ * untouched and only kicks in on a touchscreen (tablet, 2-in-1). Bigger tap
+ * targets throughout, and each question's rating buttons get their own
+ * full-width row so four choices aren't squeezed into a thin strip.
+ * Placed last on purpose — CSS specificity ties break on source order, so
+ * this has to come after every base rule it's meant to override. */
+@media (pointer: coarse){
+  .btn, .btn-login{padding:13px 18px; font-size:14px; min-height:46px;}
+  .btn-new{padding:14px 12px; font-size:14.5px;}
+  .nav-item{padding:14px 12px; font-size:14.5px;}
+  .field input, .field select, .field textarea,
+  .filters input, .filters select,
+  .crit-comment, .login-field input{padding:13px 14px; font-size:15px;}
+  .ref-btn{width:40px; height:40px;}
+  .att-x{padding:8px;}
+  .att-add{padding:9px 14px; font-size:13px;}
+  .na-toggle{gap:8px; padding:6px 2px;}
+  .na-toggle input{width:20px; height:20px;}
+  tbody td{padding:15px 12px;}
+  .seg{gap:8px; flex-wrap:wrap; width:100%;}
+  .crit-row{flex-wrap:wrap;}
+  .seg button{padding:13px 10px; font-size:13px; flex:1; min-width:80px;}
+  .cat-head{padding:17px 20px;}
+  .modal .row button, .row button{min-height:44px;}
+}
+
 </style>
 </head>
 <body>

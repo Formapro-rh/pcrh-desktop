@@ -1332,6 +1332,9 @@ const CHANGELOG = {
   '1.18.0': [
     "L'export Excel contient désormais le détail de chaque question de chaque audit, ainsi que des résumés mensuel et annuel prêts à l'emploi — pratique pour construire un rapport mensuel ou annuel.",
   ],
+  '1.19.0': [
+    "Recherche et tri des colonnes (dont l'ordre alphabétique) dans la section Clients.",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -1358,6 +1361,7 @@ const App = {
     showSettings:false, settingsForm:null,
     showCreateSpace:false, newSpaceForm:null,
     compareA:null, compareB:null,
+    clientsSearch:'', clientsSort:{field:null, dir:'asc'},
     gridOverrides:null, gridOpenCats:new Set(), gridEditingId:null, confirmRemoveQuestion:null, gridSearch:'',
     openRefFor:null,
     reportGenBusy:false,
@@ -2709,20 +2713,68 @@ const App = {
     return Object.values(byKey).map(g=>{
       const sorted = g.missions.slice().sort((a,b)=> (b.dateAudit||'').localeCompare(a.dateAudit||''));
       const scores = sorted.map(computeScores);
+      const lastScore = scores[0].global;
+      const prevScore = scores.length>1 ? scores[1].global : null;
       return {
         name: g.name,
         count: sorted.length,
         lastDate: sorted[0].dateAudit,
-        lastScore: scores[0].global,
-        prevScore: scores.length>1 ? scores[1].global : null,
+        lastScore, prevScore,
+        delta: (lastScore!=null && prevScore!=null) ? lastScore-prevScore : null,
         nextAudit: sorted[0].prochainAuditPrevu || null,
         missions: sorted,
       };
     }).sort((a,b)=> (b.lastDate||'').localeCompare(a.lastDate||''));
   },
 
+  setClientsSearch(q){ this.state.clientsSearch = q; this.render(); },
+  /** Text fields default to A→Z on first click; date/number fields default
+   *  to biggest/most-recent first — same convention as the missions table. */
+  setClientsSort(field){
+    const DESC_FIRST = new Set(['count','lastDate','lastScore','delta','nextAudit']);
+    if(this.state.clientsSort.field === field){
+      this.state.clientsSort = { field, dir: this.state.clientsSort.dir==='asc' ? 'desc' : 'asc' };
+    } else {
+      this.state.clientsSort = { field, dir: DESC_FIRST.has(field) ? 'desc' : 'asc' };
+    }
+    this.render();
+  },
+  filteredSortedClients(){
+    const q = this.state.clientsSearch.trim().toLowerCase();
+    let list = this.clientsSummary();
+    if(q) list = list.filter(c=>c.name.toLowerCase().includes(q));
+    const { field, dir } = this.state.clientsSort;
+    if(!field) return list; // clientsSummary()'s own order: most recently audited first
+    const mul = dir==='asc' ? 1 : -1;
+    const val = (c)=>{
+      switch(field){
+        case 'name': return c.name.toLowerCase();
+        case 'count': return c.count;
+        case 'lastDate': return c.lastDate||'';
+        case 'lastScore': return c.lastScore==null ? -1 : c.lastScore;
+        case 'delta': return c.delta==null ? -Infinity : c.delta;
+        case 'nextAudit': return c.nextAudit||'';
+        default: return '';
+      }
+    };
+    return list.slice().sort((a,b)=>{
+      const va=val(a), vb=val(b);
+      if(va<vb) return -1*mul;
+      if(va>vb) return 1*mul;
+      return 0;
+    });
+  },
+  /** Renders a clickable, sort-indicating <th> for the clients table. */
+  clientSortTh(field, label){
+    const s = this.state.clientsSort;
+    const active = s.field===field;
+    const arrow = active ? (s.dir==='asc' ? ' ▲' : ' ▼') : '';
+    return `<th onclick="App.setClientsSort('${field}')" style="cursor:pointer; user-select:none; ${active?'color:var(--ink);':''}" title="Trier par ${label.toLowerCase()}">${label}${arrow}</th>`;
+  },
+
   renderClients(){
-    const clients = this.clientsSummary();
+    const all = this.clientsSummary();
+    const clients = this.filteredSortedClients();
     return `
       <div class="pagehead">
         <div>
@@ -2731,12 +2783,20 @@ const App = {
         </div>
       </div>
       <div class="panel">
-        ${clients.length===0 ? `<div class="empty-state"><div class="glyph">RH</div><h3>Aucun client pour le moment</h3><p>Les clients apparaissent ici dès qu'un premier audit est créé.</p></div>` : `
+        ${all.length>0 ? `
+        <div class="panel-head">
+          <div class="filters">
+            <input type="text" placeholder="Rechercher une entreprise…" value="${esc(this.state.clientsSearch)}" oninput="App.setClientsSearch(this.value)" id="clients-search"/>
+          </div>
+        </div>` : ''}
+        ${all.length===0 ? `<div class="empty-state"><div class="glyph">RH</div><h3>Aucun client pour le moment</h3><p>Les clients apparaissent ici dès qu'un premier audit est créé.</p></div>`
+        : clients.length===0 ? `<div class="empty-state"><h3>Aucun résultat</h3><p>Aucun client ne correspond à « ${esc(this.state.clientsSearch)} ».</p></div>` : `
         <div class="table-wrap"><table>
-          <thead><tr><th>Entreprise</th><th>Audits</th><th>Dernier audit</th><th>Dernier score</th><th>Évolution</th><th>Prochain audit</th></tr></thead>
+          <thead><tr>
+            ${this.clientSortTh('name','Entreprise')}${this.clientSortTh('count','Audits')}${this.clientSortTh('lastDate','Dernier audit')}${this.clientSortTh('lastScore','Dernier score')}${this.clientSortTh('delta','Évolution')}${this.clientSortTh('nextAudit','Prochain audit')}
+          </tr></thead>
           <tbody>
             ${clients.map(c=>{
-              const delta = (c.lastScore!=null && c.prevScore!=null) ? c.lastScore - c.prevScore : null;
               const due = auditDueStatus(c.nextAudit);
               const dueColor = due==='overdue' ? 'var(--critical)' : due==='soon' ? 'var(--warning)' : 'var(--ink-2)';
               return `<tr onclick="App.viewClient('${jsAttr(c.name)}')">
@@ -2744,7 +2804,7 @@ const App = {
                 <td class="tnum">${c.count}</td>
                 <td class="tnum">${formatDate(c.lastDate)}</td>
                 <td><span class="score-chip ${scoreClass(c.lastScore)}">${c.lastScore!=null?c.lastScore:'—'}${c.lastScore!=null?'<span class="u"> %</span>':''}</span></td>
-                <td class="tnum">${delta==null ? '<span style="color:var(--ink-3)">—</span>' : delta===0 ? '<span style="color:var(--ink-3)">= 0 pt</span>' : `<span style="color:${delta>0?'var(--good)':'var(--critical)'}">${delta>0?'▲':'▼'} ${Math.abs(delta)} pt${Math.abs(delta)>1?'s':''}</span>`}</td>
+                <td class="tnum">${c.delta==null ? '<span style="color:var(--ink-3)">—</span>' : c.delta===0 ? '<span style="color:var(--ink-3)">= 0 pt</span>' : `<span style="color:${c.delta>0?'var(--good)':'var(--critical)'}">${c.delta>0?'▲':'▼'} ${Math.abs(c.delta)} pt${Math.abs(c.delta)>1?'s':''}</span>`}</td>
                 <td class="tnum" style="color:${dueColor}; ${due&&due!=='ok'?'font-weight:600;':''}">${c.nextAudit ? formatDate(c.nextAudit)+(due==='overdue'?' ⚠':'') : '<span style="color:var(--ink-3)">—</span>'}</td>
               </tr>`;
             }).join('')}

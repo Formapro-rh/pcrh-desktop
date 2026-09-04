@@ -288,6 +288,9 @@ ipcMain.handle('data:delete', async (evt, id) => {
   let missions = await readMissions(session.folder);
   missions = missions.filter(m => m.id !== id);
   await writeMissions(session.folder, missions);
+  // Permanent deletion (not the soft-delete/corbeille) — clean up any files
+  // attached to this audit's questions so they don't pile up forever.
+  await fsp.rm(path.join(session.folder, 'pieces-jointes', safeFileName(id)), { recursive: true, force: true }).catch(() => {});
   return { ok: true };
 });
 
@@ -495,6 +498,57 @@ ipcMain.handle('report:generate', async (evt, { mission, scores }) => {
   } catch (e) {
     const msg = e && e.status === 401 ? "Clé API Anthropic invalide." : (e.message || String(e));
     return { ok: false, error: "Échec de la génération du rapport : " + msg };
+  }
+});
+
+/* ---------------- Pièces jointes par question ---------------- */
+function attachmentDir(missionId, critId) {
+  return path.join(session.folder, 'pieces-jointes', safeFileName(missionId), safeFileName(critId));
+}
+
+ipcMain.handle('attachment:add', async (evt, { missionId, critId }) => {
+  try {
+    requireSession();
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choisir un fichier à joindre à cette question',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Documents et images', extensions: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'png', 'jpg', 'jpeg', 'heic', 'txt'] },
+        { name: 'Tous les fichiers', extensions: ['*'] },
+      ],
+    });
+    if (result.canceled || !result.filePaths[0]) return { canceled: true };
+    const src = result.filePaths[0];
+    const originalName = path.basename(src);
+    const dir = attachmentDir(missionId, critId);
+    await fsp.mkdir(dir, { recursive: true });
+    const storedName = Date.now() + '-' + safeFileName(originalName);
+    await fsp.copyFile(src, path.join(dir, storedName));
+    return { ok: true, file: storedName, name: originalName };
+  } catch (e) {
+    return { ok: false, error: e.code === 'not_unlocked' ? 'Session verrouillée.' : "Impossible de joindre le fichier : " + e.message };
+  }
+});
+
+ipcMain.handle('attachment:open', async (evt, { missionId, critId, file }) => {
+  try {
+    requireSession();
+    const dest = path.join(attachmentDir(missionId, critId), safeFileName(file));
+    if (!fs.existsSync(dest)) return { ok: false, error: "Ce fichier n'existe plus dans le dossier partagé." };
+    const err = await shell.openPath(dest);
+    return err ? { ok: false, error: err } : { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.code === 'not_unlocked' ? 'Session verrouillée.' : e.message };
+  }
+});
+
+ipcMain.handle('attachment:remove', async (evt, { missionId, critId, file }) => {
+  try {
+    requireSession();
+    await fsp.unlink(path.join(attachmentDir(missionId, critId), safeFileName(file))).catch(() => {});
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.code === 'not_unlocked' ? 'Session verrouillée.' : e.message };
   }
 });
 

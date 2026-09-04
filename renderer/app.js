@@ -917,6 +917,22 @@ function renderRefBtn(crit){
   </span>`;
 }
 
+/** Renders a question's attached-files row: a chip per file (click to open,
+ *  optional × to remove) plus, when editable, a "Joindre" button. Returns ''
+ *  in read-only mode with nothing attached, to avoid empty clutter in the
+ *  report view. */
+function renderAttachments(missionId, catId, critId, attachments, editable){
+  const atts = attachments||[];
+  if(!editable && atts.length===0) return '';
+  return `<div class="att-row">
+    ${atts.map(a=>`<span class="att-chip" title="${esc(a.name)}">
+      <a href="#" onclick="event.preventDefault(); App.openQuestionAttachment('${missionId}','${critId}','${a.file}');">${icon('paperclip',12)} ${esc(a.name.length>24?a.name.slice(0,21)+'…':a.name)}</a>
+      ${editable ? `<button type="button" class="att-x" title="Retirer" onclick="App.removeQuestionAttachment('${catId}','${critId}','${a.file}', event)">${icon('x',10)}</button>` : ''}
+    </span>`).join('')}
+    ${editable ? `<button type="button" class="btn ghost att-add" onclick="App.addQuestionAttachment('${catId}','${critId}')">${icon('paperclip',12)} Joindre un fichier</button>` : ''}
+  </div>`;
+}
+
 const NOTE_LABELS = { na:"N/A", 0:"Non conforme", 1:"Partiel", 2:"Conforme" };
 const STATUT_MISSION = { brouillon:"Brouillon", en_cours:"En cours", cloture:"Clôturé" };
 const STATUT_NC = { ouvert:"Ouvert", en_cours_nc:"En cours", clos:"Clos" };
@@ -943,6 +959,7 @@ function icon(name, size){
     download:`<path d="M12 3v12" ${p}/><polyline points="7 10 12 15 17 10" ${p}/><path d="M5 21h14" ${p}/>`,
     building:`<rect x="4" y="3" width="16" height="18" rx="1" ${p}/><line x1="9" y1="7" x2="9" y2="7.01" ${p}/><line x1="15" y1="7" x2="15" y2="7.01" ${p}/><line x1="9" y1="11" x2="9" y2="11.01" ${p}/><line x1="15" y1="11" x2="15" y2="11.01" ${p}/><line x1="9" y1="15" x2="9" y2="15.01" ${p}/><line x1="15" y1="15" x2="15" y2="15.01" ${p}/><line x1="10" y1="21" x2="10" y2="18" ${p}/><line x1="14" y1="21" x2="14" y2="18" ${p}/>`,
     copy:`<rect x="9" y="9" width="12" height="12" rx="1.5" ${p}/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" ${p}/>`,
+    paperclip:`<path d="M21.4 11.05 12.2 20.2a5 5 0 0 1-7.07-7.07l9.2-9.2a3.5 3.5 0 0 1 4.94 4.95l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.48-8.48" ${p}/>`,
   };
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24">${paths[name]||''}</svg>`;
 }
@@ -1011,22 +1028,42 @@ function summarizeMissionChanges(oldMission, newMission){
     if((oldMission[f]||'') !== (newMission[f]||'')) parts.push(`${FIELD_LABEL[f]} modifié`);
   });
 
-  let notesChanged=0, commentsChanged=0, customAdded=0, customRemoved=0;
+  let notesChanged=0, commentsChanged=0, customAdded=0, customRemoved=0, attachmentsAdded=0, attachmentsRemoved=0;
   const oldCritById = {};
   (oldMission.grid||[]).forEach(catG=>(catG.criteres||[]).forEach(c=>{ oldCritById[c.id]=c; }));
   const newCritIds = new Set();
   (newMission.grid||[]).forEach(catG=>(catG.criteres||[]).forEach(c=>{
     newCritIds.add(c.id);
     const o = oldCritById[c.id];
-    if(!o){ if(c.custom) customAdded++; return; }
+    const oAtt = (o&&o.attachments)||[], nAtt = c.attachments||[];
+    if(!o){ if(c.custom) customAdded++; attachmentsAdded += nAtt.length; return; }
     if(o.note !== c.note) notesChanged++;
     if((o.comment||'') !== (c.comment||'')) commentsChanged++;
+    const oFiles = new Set(oAtt.map(a=>a.file)), nFiles = new Set(nAtt.map(a=>a.file));
+    nAtt.forEach(a=>{ if(!oFiles.has(a.file)) attachmentsAdded++; });
+    oAtt.forEach(a=>{ if(!nFiles.has(a.file)) attachmentsRemoved++; });
   }));
-  Object.values(oldCritById).forEach(o=>{ if(o.custom && !newCritIds.has(o.id)) customRemoved++; });
+  Object.values(oldCritById).forEach(o=>{
+    if(o.custom && !newCritIds.has(o.id)) customRemoved++;
+    if(!newCritIds.has(o.id)) attachmentsRemoved += (o.attachments||[]).length;
+  });
   if(notesChanged) parts.push(`${notesChanged} réponse${notesChanged>1?'s':''} modifiée${notesChanged>1?'s':''}`);
   if(commentsChanged) parts.push(`${commentsChanged} commentaire${commentsChanged>1?'s':''} modifié${commentsChanged>1?'s':''}`);
   if(customAdded) parts.push(`${customAdded} question${customAdded>1?'s':''} personnalisée${customAdded>1?'s':''} ajoutée${customAdded>1?'s':''}`);
   if(customRemoved) parts.push(`${customRemoved} question${customRemoved>1?'s':''} personnalisée${customRemoved>1?'s':''} supprimée${customRemoved>1?'s':''}`);
+  if(attachmentsAdded) parts.push(`${attachmentsAdded} fichier${attachmentsAdded>1?'s':''} joint${attachmentsAdded>1?'s':''}`);
+  if(attachmentsRemoved) parts.push(`${attachmentsRemoved} fichier${attachmentsRemoved>1?'s':''} retiré${attachmentsRemoved>1?'s':''}`);
+
+  const oldCatById = {};
+  (oldMission.grid||[]).forEach(c=>{ oldCatById[c.catId]=c; });
+  let naAdded=0, naRemoved=0;
+  (newMission.grid||[]).forEach(c=>{
+    const o = oldCatById[c.catId];
+    if(!!c.na === !!(o&&o.na)) return;
+    if(c.na) naAdded++; else naRemoved++;
+  });
+  if(naAdded) parts.push(`${naAdded} domaine${naAdded>1?'s':''} marqué${naAdded>1?'s':''} non applicable`);
+  if(naRemoved) parts.push(`${naRemoved} domaine${naRemoved>1?'s':''} redevenu${naRemoved>1?'s':''} applicable`);
 
   const oldNcById = {};
   (oldMission.nonConformites||[]).forEach(n=>{ oldNcById[n.id]=n; });
@@ -1055,17 +1092,27 @@ function summarizeMissionChanges(oldMission, newMission){
 function cloneMission(m){ return JSON.parse(JSON.stringify(m)); }
 
 function computeScores(mission){
+  // A domain marked "non applicable" for this audit (catG.na) is excluded
+  // entirely from scoring — its questions still exist and can carry notes,
+  // but neither its own score nor the global score counts them.
   const catScores = mission.grid.map(catG=>{
     const tpl = CATEGORIES_TEMPLATE.find(c=>c.id===catG.catId);
+    if(catG.na){
+      return { catId: catG.catId, nom: tpl?tpl.nom:catG.catId, pct: null, count: 0, total: catG.criteres.length, na: true };
+    }
     let sum=0, count=0;
     catG.criteres.forEach(c=>{ if(c.note===0||c.note===1||c.note===2){ sum+=c.note; count++; } });
     const pct = count>0 ? Math.round((sum/(count*2))*100) : null;
     return { catId: catG.catId, nom: tpl?tpl.nom:catG.catId, pct, count, total: catG.criteres.length };
   });
-  let sum=0, count=0;
-  mission.grid.forEach(catG=> catG.criteres.forEach(c=>{ if(c.note===0||c.note===1||c.note===2){ sum+=c.note; count++; } }));
+  let sum=0, count=0, total=0;
+  mission.grid.forEach(catG=>{
+    if(catG.na) return;
+    total += catG.criteres.length;
+    catG.criteres.forEach(c=>{ if(c.note===0||c.note===1||c.note===2){ sum+=c.note; count++; } });
+  });
   const global = count>0 ? Math.round((sum/(count*2))*100) : null;
-  return { catScores, global, scored: count, total: mission.grid.reduce((a,c)=>a+c.criteres.length,0) };
+  return { catScores, global, scored: count, total };
 }
 function scoreClass(pct){
   if(pct==null) return 'score-none';
@@ -1180,6 +1227,11 @@ const CHANGELOG = {
   '1.9.0': [
     "Possibilité d'ajouter des questions propres à un audit, en plus de la grille standard — utile pour un point spécifique à un client, sans modifier la grille commune.",
   ],
+  '1.10.0': [
+    "Pièces jointes sur chaque question (photo, scan, document) — visibles sur la fiche de l'audit, absentes du rapport PDF client.",
+    "Un domaine entier peut être marqué « Non applicable » pour un audit donné (ex : BDESE pour une petite structure) — il est alors exclu du score, sans perdre les réponses déjà saisies.",
+    "Notification de bureau à l'ouverture de l'application s'il existe des non-conformités en retard.",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -1263,7 +1315,26 @@ const App = {
     await this.loadMissions();
     this.startPolling();
     await this.checkWhatsNew();
+    this.notifyOverdueOnce();
     this.render();
+  },
+
+  /** One native desktop notification per unlock (not on every 20s poll)
+   *  when non-conformités are already past their échéance — a nudge for
+   *  anyone who doesn't have the dashboard open all day. Never blocks
+   *  login if notifications are unsupported or denied. */
+  notifyOverdueOnce(){
+    try{
+      if(typeof Notification==='undefined') return;
+      const overdue = this.state.missions.filter(m=>!m.deletedAt).reduce((a,m)=>a+overdueNCCount(m),0);
+      if(overdue<=0) return;
+      const body = `${overdue} non-conformité${overdue>1?'s':''} en retard sur vos audits.`;
+      if(Notification.permission==='granted'){
+        new Notification('Audits PCRH', { body });
+      } else if(Notification.permission==='default'){
+        Notification.requestPermission().then(p=>{ if(p==='granted') new Notification('Audits PCRH', { body }); }).catch(()=>{});
+      }
+    }catch(e){ /* non-blocking */ }
   },
 
   /** Compares the running app's version to the last one recorded on this
@@ -1413,6 +1484,40 @@ const App = {
     const cat = this.state.draft.grid.find(c=>c.catId===catId);
     if(!cat) return;
     cat.criteres = cat.criteres.filter(c=>c.id!==critId);
+    this.render();
+  },
+
+  /* ---- attachments on a grid question (proofs: photos, scans, documents) ---- */
+  async addQuestionAttachment(catId, critId){
+    const res = await window.api.addAttachment({ missionId: this.state.draft.id, critId });
+    if(res.canceled) return;
+    if(!res.ok){ this.showToast(res.error || "Échec de l'ajout du fichier"); return; }
+    const cat = this.state.draft.grid.find(c=>c.catId===catId);
+    const crit = cat.criteres.find(c=>c.id===critId);
+    crit.attachments = (crit.attachments||[]).concat([{ file: res.file, name: res.name, addedAt: new Date().toISOString() }]);
+    this.render();
+  },
+  async openQuestionAttachment(missionId, critId, file){
+    const res = await window.api.openAttachment({ missionId, critId, file });
+    if(!res.ok) this.showToast(res.error || "Impossible d'ouvrir le fichier");
+  },
+  async removeQuestionAttachment(catId, critId, file, evt){
+    if(evt) evt.stopPropagation();
+    const res = await window.api.removeAttachment({ missionId: this.state.draft.id, critId, file });
+    if(!res.ok){ this.showToast(res.error || "Échec de la suppression"); return; }
+    const cat = this.state.draft.grid.find(c=>c.catId===catId);
+    const crit = cat.criteres.find(c=>c.id===critId);
+    crit.attachments = (crit.attachments||[]).filter(a=>a.file!==file);
+    this.render();
+  },
+  /** Excludes a whole domain from this audit's scoring (e.g. BDESE for a
+   *  company under 50 employees) without deleting any answers already
+   *  entered — reversible any time. */
+  toggleCategoryNA(catId, evt){
+    if(evt) evt.stopPropagation();
+    const cat = this.state.draft.grid.find(c=>c.catId===catId);
+    if(!cat) return;
+    cat.na = !cat.na;
     this.render();
   },
   toggleCat(catId){
@@ -2381,9 +2486,15 @@ const App = {
           return `<div class="cat-block">
             <div class="cat-head ${open?'open':''}" onclick="App.toggleCat('${cat.id}')">
               <div class="left">${icon('chev',15)}<h3>${esc(cat.nom)}</h3><span class="n">${cs.count}/${cs.total}</span></div>
-              <div class="cat-score" style="color:${scoreColor(cs.pct)}">${cs.pct!=null?cs.pct+'%':'—'}</div>
+              <div style="display:flex; align-items:center; gap:12px;">
+                <label class="na-toggle" onclick="event.stopPropagation()" title="Exclure ce domaine du score de cet audit">
+                  <input type="checkbox" ${catG.na?'checked':''} onchange="App.toggleCategoryNA('${cat.id}')"/> Non applicable
+                </label>
+                <div class="cat-score" style="color:${catG.na?'var(--ink-3)':scoreColor(cs.pct)}">${catG.na ? 'N/A' : (cs.pct!=null?cs.pct+'%':'—')}</div>
+              </div>
             </div>
             ${open ? `<div class="cat-body">
+              ${catG.na ? `<div class="divider-note" style="margin:6px 0 10px; color:var(--ink-2);">Domaine marqué non applicable pour cet audit — exclu du score. Les réponses ci-dessous restent visibles mais ne comptent pas.</div>` : ''}
               ${sousDomaineGroups(cat).map(group=>`
                 ${group.nom ? `<div class="sd-head">${esc(group.nom)}</div>` : ''}
                 ${group.criteres.map(crit=>{
@@ -2392,6 +2503,7 @@ const App = {
                     <div class="crit-main">
                       <div class="crit-label">${esc(crit.label)}${renderRefBtn(crit)}</div>
                       <input class="crit-comment" type="text" placeholder="Commentaire (optionnel)" value="${esc(val.comment)}" oninput="App.setComment('${cat.id}','${crit.id}', this.value)"/>
+                      ${renderAttachments(d.id, cat.id, crit.id, val.attachments, true)}
                     </div>
                     <div class="seg">
                       <button class="${val.note===null?'sel-na':''}" onclick="App.setNote('${cat.id}','${crit.id}', null)">N/A</button>
@@ -2408,6 +2520,7 @@ const App = {
                   <div class="crit-main">
                     <div class="crit-label">${esc(c.label)} <button class="btn ghost" title="Supprimer cette question" style="padding:1px 5px; margin-left:4px; vertical-align:middle;" onclick="App.removeCustomQuestion('${cat.id}','${c.id}', event)">${icon('x',12)}</button></div>
                     <input class="crit-comment" type="text" placeholder="Commentaire (optionnel)" value="${esc(c.comment)}" oninput="App.setComment('${cat.id}','${c.id}', this.value)"/>
+                    ${renderAttachments(d.id, cat.id, c.id, c.attachments, true)}
                   </div>
                   <div class="seg">
                     <button class="${c.note===null?'sel-na':''}" onclick="App.setNote('${cat.id}','${c.id}', null)">N/A</button>
@@ -2552,8 +2665,8 @@ const App = {
             const cs = sc.catScores.find(c=>c.catId===cat.id);
             return `<div>
               <div class="report-cat-row">
-                <div style="font-weight:600; font-size:13.5px;">${esc(cat.nom)}</div>
-                <div class="score-chip ${scoreClass(cs.pct)}">${cs.pct!=null?cs.pct:'—'}${cs.pct!=null?'<span class="u"> %</span>':''}</div>
+                <div style="font-weight:600; font-size:13.5px;">${esc(cat.nom)}${catG.na?' <span style="font-weight:500; color:var(--ink-3); font-size:12px;">(non applicable)</span>':''}</div>
+                <div class="score-chip ${catG.na?'score-none':scoreClass(cs.pct)}">${catG.na ? 'N/A' : (cs.pct!=null?cs.pct+'<span class="u"> %</span>':'—')}</div>
               </div>
               <div class="report-crit-detail">
                 ${sousDomaineGroups(cat).map(group=>`
@@ -2563,6 +2676,7 @@ const App = {
                     const noteTxt = val.note===null ? 'N/A' : NOTE_LABELS[val.note];
                     return `<div class="report-crit-line">
                       <div class="txt"><b>${noteTxt}</b> — ${esc(crit.label)}${val.comment?(' · '+esc(val.comment)):''}${renderRefBtn(crit)}</div>
+                      ${val.attachments&&val.attachments.length ? `<div class="no-print">${renderAttachments(m.id, cat.id, crit.id, val.attachments, false)}</div>` : ''}
                     </div>`;
                   }).join('')}
                 `).join('')}
@@ -2570,6 +2684,7 @@ const App = {
                   const noteTxt = c.note===null ? 'N/A' : NOTE_LABELS[c.note];
                   return `<div class="report-crit-line">
                     <div class="txt"><b>${noteTxt}</b> — ${esc(c.label)}${c.comment?(' · '+esc(c.comment)):''}</div>
+                    ${c.attachments&&c.attachments.length ? `<div class="no-print">${renderAttachments(m.id, cat.id, c.id, c.attachments, false)}</div>` : ''}
                   </div>`;
                 }).join('')}
               </div>

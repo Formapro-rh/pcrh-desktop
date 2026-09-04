@@ -11,9 +11,12 @@ const {
   TextRun, WidthType, AlignmentType, BorderStyle,
 } = require('docx');
 const XLSX = require('xlsx');
+const { autoUpdater } = require('electron-updater');
 
 const CONFIG_FILE = 'espace.json';
 const DATA_FILE = 'audits.json';
+const BACKUP_DIR_NAME = 'sauvegardes';
+const BACKUP_RETENTION_DAYS = 30;
 const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
 
 /** In-memory session state, held ONLY in the trusted main process.
@@ -54,6 +57,7 @@ function verifyCode(code, salt, hash) {
 /* ---------------- file helpers ---------------- */
 function configPath(folder) { return path.join(folder, CONFIG_FILE); }
 function dataPath(folder) { return path.join(folder, DATA_FILE); }
+function backupDir(folder) { return path.join(folder, BACKUP_DIR_NAME); }
 
 async function atomicWrite(filePath, content) {
   const tmp = filePath + '.tmp-' + process.pid;
@@ -70,7 +74,46 @@ async function readMissions(folder) {
     return [];
   }
 }
+
+/** Delete dated snapshots older than BACKUP_RETENTION_DAYS, so the shared
+ *  folder doesn't grow forever. Never throws. */
+async function pruneOldBackups(dir) {
+  try {
+    const cutoff = Date.now() - BACKUP_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    const files = await fsp.readdir(dir);
+    for (const f of files) {
+      const m = f.match(/^audits-(\d{4}-\d{2}-\d{2})\.json$/);
+      if (!m) continue;
+      const t = new Date(m[1] + 'T00:00:00').getTime();
+      if (!isNaN(t) && t < cutoff) await fsp.unlink(path.join(dir, f)).catch(() => {});
+    }
+  } catch (e) { /* best effort */ }
+}
+
+/** Snapshot the CURRENT audits.json before it gets overwritten — a safety
+ *  net against a bad write, a corrupted OneDrive/Drive sync, or an
+ *  accidental deletion. Keeps two things: a rolling copy of the version
+ *  right before the last write (undo the very last change) and one dated
+ *  snapshot per calendar day (recover from further back), auto-pruned
+ *  after BACKUP_RETENTION_DAYS. Never throws — a backup failure must never
+ *  block saving the user's actual work. */
+async function backupBeforeWrite(folder) {
+  try {
+    const current = await fsp.readFile(dataPath(folder), 'utf8');
+    const dir = backupDir(folder);
+    await fsp.mkdir(dir, { recursive: true });
+    await atomicWrite(path.join(dir, 'audits.avant-derniere-modif.json'), current);
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const dailyFile = path.join(dir, `audits-${today}.json`);
+    if (!fs.existsSync(dailyFile)) await atomicWrite(dailyFile, current);
+    await pruneOldBackups(dir);
+  } catch (e) {
+    // e.g. ENOENT: no audits.json yet on the very first save — nothing to back up.
+  }
+}
+
 async function writeMissions(folder, missions) {
+  await backupBeforeWrite(folder);
   await atomicWrite(dataPath(folder), JSON.stringify(missions, null, 2));
 }
 
@@ -187,6 +230,18 @@ ipcMain.handle('space:lock', async () => {
 ipcMain.handle('space:reveal', async () => {
   if (session.folder) shell.showItemInFolder(dataPath(session.folder));
   return { ok: true };
+});
+
+ipcMain.handle('space:openBackups', async () => {
+  try {
+    requireSession();
+    const dir = backupDir(session.folder);
+    await fsp.mkdir(dir, { recursive: true });
+    const err = await shell.openPath(dir);
+    return err ? { ok: false, error: err } : { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.code === 'not_unlocked' ? 'Session verrouillée.' : e.message };
+  }
 });
 
 ipcMain.handle('app:openExternal', async (evt, url) => {
@@ -511,6 +566,39 @@ ipcMain.handle('export:xlsx', async (evt, { audits, nonConformites }) => {
   }
 });
 
+/* ---------------- mise à jour automatique ---------------- */
+function setupAutoUpdater() {
+  if (!app.isPackaged) return; // no update feed to check against in dev mode
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('update-downloaded', (info) => {
+    dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      buttons: ['Redémarrer maintenant', 'Plus tard'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Mise à jour disponible',
+      message: `Une nouvelle version d'Audits PCRH (${info.version}) a été téléchargée.`,
+      detail: "Redémarrez l'application pour l'installer. Vos audits, dans le dossier partagé, ne sont pas affectés.",
+    }).then(({ response }) => {
+      if (response === 0) autoUpdater.quitAndInstall();
+    });
+  });
+
+  autoUpdater.on('error', (err) => {
+    console.error('Auto-update error:', err && err.message);
+  });
+
+  const check = () => autoUpdater.checkForUpdates().catch(err => {
+    console.error('checkForUpdates failed:', err && err.message);
+  });
+  check();
+  // The app can stay open for days — re-check periodically, not just at launch.
+  setInterval(check, 4 * 60 * 60 * 1000);
+}
+
 /* ---------------- window ---------------- */
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -531,7 +619,10 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createWindow();
+  setTimeout(setupAutoUpdater, 3000);
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

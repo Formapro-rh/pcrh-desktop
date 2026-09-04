@@ -899,7 +899,7 @@ function sousDomaineGroups(cat){
 const CRITERES_INDEX = {};
 CATEGORIES_TEMPLATE.forEach(cat=>{
   cat.criteres.forEach(crit=>{
-    CRITERES_INDEX[crit.id] = { label: crit.label, catNom: cat.nom };
+    CRITERES_INDEX[crit.id] = { label: crit.label, catNom: cat.nom, catId: cat.id };
   });
 });
 
@@ -1421,6 +1421,7 @@ const App = {
     this.showToast("Identifiant et code d'accès mis à jour");
   },
   async revealFolder(){ await window.api.revealDataFile(); },
+  async revealBackups(){ await window.api.openBackupsFolder(); },
   async copyAuditDataForClaude(id){
     const m = this.state.missions.find(x=>x.id===id);
     if(!m) return;
@@ -1686,6 +1687,8 @@ const App = {
         <div class="settings-row"><div class="k">Identifiant actuel</div><div class="v">${esc(this.state.auth.identifiant)}</div></div>
         <div class="settings-row"><div class="k">Dossier de données</div><div class="v" style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(this.state.auth.folder)}">${esc(this.state.auth.folder)}</div></div>
         <div class="settings-row"><div class="k">Fichier d'audits</div><button class="btn ghost" onclick="App.revealFolder()">Ouvrir l'emplacement</button></div>
+        <div class="settings-row"><div class="k">Sauvegardes automatiques</div><button class="btn ghost" onclick="App.revealBackups()">Ouvrir le dossier</button></div>
+        <div class="field-hint" style="margin:-4px 0 0;">Une copie de sécurité est conservée automatiquement avant chaque modification (30 derniers jours), au cas où un audit serait perdu ou corrompu.</div>
 
         ${!f.editing ? `
           <div class="settings-row"><div class="k">Identifiant / code d'accès</div><button class="btn" onclick="App.toggleEditCode()">Changer</button></div>
@@ -1762,6 +1765,17 @@ const App = {
           </div>
         </div>
         <div class="panel-body chart-wrap">${this.renderTrendChart(all, scored)}</div>
+      </div>
+
+      <div class="panel-row">
+        <div class="panel">
+          <div class="panel-head"><h2>Score moyen par domaine</h2></div>
+          <div class="panel-body chart-wrap">${this.renderDomainScoreChart(scored)}</div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Non-conformités ouvertes par domaine</h2></div>
+          <div class="panel-body chart-wrap">${this.renderNCDomainChart(all)}</div>
+        </div>
       </div>
 
       <div class="panel">
@@ -1855,6 +1869,57 @@ const App = {
       ${dots}
       ${xTicks}
     </svg>`;
+  },
+
+  /** Average conformity score per domain, across every scored mission —
+   *  surfaces the domains where clients most often fall short, company-wide. */
+  renderDomainScoreChart(scored){
+    const agg = {}; // catId -> { sum, count, nom }
+    scored.forEach(s=>{
+      s.catScores.forEach(cs=>{
+        if(cs.pct==null) return;
+        if(!agg[cs.catId]) agg[cs.catId] = { sum:0, count:0, nom:cs.nom };
+        agg[cs.catId].sum += cs.pct;
+        agg[cs.catId].count += 1;
+      });
+    });
+    const rows = Object.values(agg).map(v=>({ nom:v.nom, pct: Math.round(v.sum/v.count) })).sort((a,b)=>a.pct-b.pct);
+    if(rows.length===0){
+      return `<div class="chart-empty">Notez au moins un audit pour voir le score moyen par domaine.</div>`;
+    }
+    return `<div class="bar-chart">${rows.map(r=>`
+      <div class="bar-row">
+        <div class="bar-top"><span class="lbl" title="${esc(r.nom)}">${esc(r.nom)}</span><span class="val" style="color:${scoreColor(r.pct)}">${r.pct} %</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${r.pct}%; background:${scoreColor(r.pct)}"></div></div>
+      </div>
+    `).join('')}</div>`;
+  },
+
+  /** Count of still-open non-conformités, grouped by domain — shows where
+   *  corrective actions are most needed across the whole portfolio. */
+  renderNCDomainChart(all){
+    const agg = {}; // key -> { count, nom }
+    all.forEach(m=>{
+      (m.nonConformites||[]).forEach(nc=>{
+        if(nc.statut==='clos') return;
+        const info = nc.critereId ? CRITERES_INDEX[nc.critereId] : null;
+        const key = info ? info.catId : 'autre';
+        const nom = info ? info.catNom : 'Autre';
+        if(!agg[key]) agg[key] = { count:0, nom };
+        agg[key].count += 1;
+      });
+    });
+    const rows = Object.values(agg).sort((a,b)=>b.count-a.count);
+    if(rows.length===0){
+      return `<div class="chart-empty">Aucune non-conformité ouverte actuellement.</div>`;
+    }
+    const max = Math.max(...rows.map(r=>r.count));
+    return `<div class="bar-chart">${rows.map(r=>`
+      <div class="bar-row">
+        <div class="bar-top"><span class="lbl" title="${esc(r.nom)}">${esc(r.nom)}</span><span class="val" style="color:var(--critical)">${r.count}</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${Math.round(r.count/max*100)}%; background:var(--critical)"></div></div>
+      </div>
+    `).join('')}</div>`;
   },
 
   /* ---------- Form ---------- */

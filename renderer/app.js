@@ -1165,6 +1165,9 @@ const CHANGELOG = {
   '1.6.0': [
     "Nouvelle section « Clients » : vue consolidée de tous les audits d'une même entreprise, avec leur évolution dans le temps.",
   ],
+  '1.7.0': [
+    "Le tableau des missions se trie désormais en cliquant sur l'en-tête d'une colonne (référence, entreprise, date, score, non-conformités...).",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -1185,6 +1188,7 @@ const App = {
     auth:{ unlocked:false, folder:null, identifiant:null, tab:'join',
       formFolder:null, formIdentifiant:'', formCode:'', formCode2:'', error:'', busy:false, folderExists:null },
     view:'dashboard', missions:[], filters:{ q:'', statut:'' },
+    sort:{ field:'dateAudit', dir:'desc' },
     draft:null, openCats:new Set(CATEGORIES_TEMPLATE.map(c=>c.id)),
     reportId:null, confirm:null, conflict:null, toast:'',
     showSettings:false, settingsForm:null,
@@ -1525,12 +1529,57 @@ const App = {
   filteredMissions(){
     const q = this.state.filters.q.trim().toLowerCase();
     const st = this.state.filters.statut;
-    return this.state.missions.filter(m=>{
+    const list = this.state.missions.filter(m=>{
       if(m.deletedAt) return false;
       if(st && m.statut!==st) return false;
       if(q && !missionMatchesQuery(m, q)) return false;
       return true;
     });
+    return this.sortMissions(list);
+  },
+
+  /** Numeric/date fields default to a "biggest/most-recent first" sort on
+   *  first click, since that's almost always the useful reading direction;
+   *  text fields default to A→Z. Clicking the same column again flips it. */
+  setSort(field){
+    const DESC_FIRST = new Set(['dateAudit','score','nc']);
+    if(this.state.sort.field === field){
+      this.state.sort = { field, dir: this.state.sort.dir==='asc' ? 'desc' : 'asc' };
+    } else {
+      this.state.sort = { field, dir: DESC_FIRST.has(field) ? 'desc' : 'asc' };
+    }
+    this.render();
+  },
+  sortMissions(list){
+    const { field, dir } = this.state.sort;
+    if(!field) return list;
+    const mul = dir==='asc' ? 1 : -1;
+    const val = (m)=>{
+      switch(field){
+        case 'reference': return (m.reference||'').toLowerCase();
+        case 'client': return (m.client||'').toLowerCase();
+        case 'consultant': return (m.consultant||'').toLowerCase();
+        case 'auditeur': return (m.auditeur||'').toLowerCase();
+        case 'dateAudit': return m.dateAudit||'';
+        case 'statut': return m.statut||'';
+        case 'score': { const s = computeScores(m).global; return s==null ? -1 : s; }
+        case 'nc': return openNCCount(m);
+        default: return '';
+      }
+    };
+    return list.slice().sort((a,b)=>{
+      const va = val(a), vb = val(b);
+      if(va<vb) return -1*mul;
+      if(va>vb) return 1*mul;
+      return 0;
+    });
+  },
+  /** Renders a clickable, sort-indicating <th>. */
+  sortTh(field, label){
+    const s = this.state.sort;
+    const active = s.field===field;
+    const arrow = active ? (s.dir==='asc' ? ' ▲' : ' ▼') : '';
+    return `<th onclick="App.setSort('${field}')" style="cursor:pointer; user-select:none; ${active?'color:var(--ink);':''}" title="Trier par ${label.toLowerCase()}">${label}${arrow}</th>`;
   },
 
   /* ---- settings ---- */
@@ -1958,7 +2007,7 @@ const App = {
         ${list.length===0 ? this.renderEmptyMissions(all.length>0) : `
         <div class="table-wrap"><table>
           <thead><tr>
-            <th>Référence</th><th>Entreprise</th><th>Service audité</th><th>Auditeur</th><th>Date d'audit</th><th>Statut</th><th>Score</th><th>NC ouvertes</th><th></th>
+            ${this.sortTh('reference','Référence')}${this.sortTh('client','Entreprise')}${this.sortTh('consultant','Service audité')}${this.sortTh('auditeur','Auditeur')}${this.sortTh('dateAudit',"Date d'audit")}${this.sortTh('statut','Statut')}${this.sortTh('score','Score')}${this.sortTh('nc','NC ouvertes')}<th></th>
           </tr></thead>
           <tbody>
             ${list.map(m=>{

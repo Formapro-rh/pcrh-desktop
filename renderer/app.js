@@ -988,9 +988,62 @@ function newMissionDraft(){
       catId: cat.id, criteres: cat.criteres.map(c=>({ id:c.id, note:null, comment:'' }))
     })),
     nonConformites: [],
+    historique: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
+}
+
+/** Human-readable summary of what changed between two versions of a mission,
+ *  for the per-audit history log. Returns null when nothing meaningful
+ *  changed (e.g. a save triggered only by an internal field bump). */
+function summarizeMissionChanges(oldMission, newMission){
+  if(!oldMission) return "Audit créé.";
+  const parts = [];
+
+  if(oldMission.statut !== newMission.statut){
+    parts.push(`Statut : ${STATUT_MISSION[oldMission.statut]||oldMission.statut} → ${STATUT_MISSION[newMission.statut]||newMission.statut}`);
+  }
+  const FIELD_LABEL = { client:'Entreprise', consultant:'Service audité', auditeur:'Auditeur', reference:'Référence', perimetre:'Périmètre', dateAudit:"Date d'audit" };
+  Object.keys(FIELD_LABEL).forEach(f=>{
+    if((oldMission[f]||'') !== (newMission[f]||'')) parts.push(`${FIELD_LABEL[f]} modifié`);
+  });
+
+  let notesChanged=0, commentsChanged=0;
+  const oldCritById = {};
+  (oldMission.grid||[]).forEach(catG=>(catG.criteres||[]).forEach(c=>{ oldCritById[c.id]=c; }));
+  (newMission.grid||[]).forEach(catG=>(catG.criteres||[]).forEach(c=>{
+    const o = oldCritById[c.id];
+    if(!o) return;
+    if(o.note !== c.note) notesChanged++;
+    if((o.comment||'') !== (c.comment||'')) commentsChanged++;
+  }));
+  if(notesChanged) parts.push(`${notesChanged} réponse${notesChanged>1?'s':''} modifiée${notesChanged>1?'s':''}`);
+  if(commentsChanged) parts.push(`${commentsChanged} commentaire${commentsChanged>1?'s':''} modifié${commentsChanged>1?'s':''}`);
+
+  const oldNcById = {};
+  (oldMission.nonConformites||[]).forEach(n=>{ oldNcById[n.id]=n; });
+  const newNcIds = new Set((newMission.nonConformites||[]).map(n=>n.id));
+  let ncAdded=0, ncStatutChanged=0, ncOtherChanged=0, ncRemoved=0;
+  (newMission.nonConformites||[]).forEach(n=>{
+    const o = oldNcById[n.id];
+    if(!o){ ncAdded++; return; }
+    if(o.statut !== n.statut) ncStatutChanged++;
+    else if(JSON.stringify(o) !== JSON.stringify(n)) ncOtherChanged++;
+  });
+  (oldMission.nonConformites||[]).forEach(n=>{ if(!newNcIds.has(n.id)) ncRemoved++; });
+  if(ncAdded) parts.push(`${ncAdded} non-conformité${ncAdded>1?'s':''} ajoutée${ncAdded>1?'s':''}`);
+  if(ncStatutChanged) parts.push(`${ncStatutChanged} non-conformité${ncStatutChanged>1?'s':''} : statut mis à jour`);
+  if(ncOtherChanged) parts.push(`${ncOtherChanged} non-conformité${ncOtherChanged>1?'s':''} modifiée${ncOtherChanged>1?'s':''}`);
+  if(ncRemoved) parts.push(`${ncRemoved} non-conformité${ncRemoved>1?'s':''} supprimée${ncRemoved>1?'s':''}`);
+
+  if((oldMission.deletedAt||null) !== (newMission.deletedAt||null)){
+    parts.push(newMission.deletedAt ? 'Envoyé à la corbeille' : 'Restauré depuis la corbeille');
+  }
+  if(!oldMission.rapportFichier && newMission.rapportFichier) parts.push('Rapport final joint');
+  if(oldMission.rapportFichier && !newMission.rapportFichier) parts.push('Rapport final retiré');
+
+  return parts.length ? parts.join(' · ') : null;
 }
 function cloneMission(m){ return JSON.parse(JSON.stringify(m)); }
 
@@ -1063,6 +1116,16 @@ const Store = {
    *  instead of silently overwriting their changes. Pass {force:true} to
    *  overwrite anyway (used when the user explicitly resolves a conflict). */
   async save(mission, opts){
+    // Log what changed, for the per-audit history panel — computed against the
+    // last version this app instance knows about (App.state.missions), before
+    // this save. Never blocks the actual save if App isn't ready yet somehow.
+    try{
+      const old = App.state.missions.find(m=>m.id===mission.id);
+      const resume = summarizeMissionChanges(old, mission);
+      if(resume){
+        mission.historique = (mission.historique||[]).concat([{ at:new Date().toISOString(), auteur:this.editorName(), resume }]);
+      }
+    }catch(e){}
     const res = await window.api.saveMission({ mission, expectedUpdatedAt: mission.updatedAt, force: !!(opts && opts.force) });
     if(res.ok){
       mission.updatedAt = res.updatedAt;
@@ -1071,7 +1134,13 @@ const Store = {
     return res;
   },
   async remove(id){ await window.api.deleteMission(id); },
-  lastAuditeur(){ try{ return localStorage.getItem('pcrh_auditeur')||''; }catch(e){ return ''; } }
+  lastAuditeur(){ try{ return localStorage.getItem('pcrh_auditeur')||''; }catch(e){ return ''; } },
+  /** The name of whoever is using THIS installation, remembered locally
+   *  (never written to the shared audits data) so per-audit history entries
+   *  can say who made a change. Purely declarative, not an authentication
+   *  mechanism — consistent with the shared-credential "espace" model. */
+  editorName(){ try{ return localStorage.getItem('pcrh_editor_name')||''; }catch(e){ return ''; } },
+  setEditorName(name){ try{ localStorage.setItem('pcrh_editor_name', (name||'').trim()); }catch(e){} },
 };
 
 /** What changed in each version, shown once via the "Quoi de neuf" screen
@@ -1087,6 +1156,10 @@ const CHANGELOG = {
   ],
   '1.4.0': [
     "Cet écran « Quoi de neuf » : il vous informe désormais des changements après chaque mise à jour automatique.",
+  ],
+  '1.5.0': [
+    "Historique des modifications sur chaque audit (qui a fait quoi, et quand) — visible en bas de la fiche de l'audit.",
+    "Nouveau champ « Votre nom » dans Paramètres, pour que l'historique vous attribue vos modifications.",
   ],
 };
 
@@ -1400,8 +1473,9 @@ const App = {
   async confirmDelete(){
     const id = this.state.confirm.id;
     this.state.confirm = null;
-    const m = this.state.missions.find(x=>x.id===id);
-    if(!m) return;
+    const orig = this.state.missions.find(x=>x.id===id);
+    if(!orig) return;
+    const m = cloneMission(orig);
     m.deletedAt = new Date().toISOString();
     const res = await Store.save(m);
     await this.loadMissions();
@@ -1419,8 +1493,9 @@ const App = {
     this.render();
   },
   async restoreMission(id){
-    const m = this.state.missions.find(x=>x.id===id);
-    if(!m) return;
+    const orig = this.state.missions.find(x=>x.id===id);
+    if(!orig) return;
+    const m = cloneMission(orig);
     delete m.deletedAt;
     const res = await Store.save(m);
     await this.loadMissions();
@@ -1508,11 +1583,12 @@ const App = {
     if(window.api && window.api.openExternal) window.api.openExternal('https://claude.ai/new');
   },
   async attachReport(id){
-    const m = this.state.missions.find(x=>x.id===id);
-    if(!m) return;
-    const res = await window.api.attachReport({ reference: m.reference });
+    const orig = this.state.missions.find(x=>x.id===id);
+    if(!orig) return;
+    const res = await window.api.attachReport({ reference: orig.reference });
     if(res.canceled) return;
     if(!res.ok){ this.showToast(res.error || "Échec de l'ajout du rapport"); return; }
+    const m = cloneMission(orig);
     m.rapportFichier = res.fileName;
     m.rapportAt = new Date().toISOString();
     const saveRes = await Store.save(m);
@@ -1527,8 +1603,9 @@ const App = {
     if(!res.ok) this.showToast(res.error || "Impossible d'ouvrir le fichier");
   },
   async removeAttachedReport(id){
-    const m = this.state.missions.find(x=>x.id===id);
-    if(!m) return;
+    const orig = this.state.missions.find(x=>x.id===id);
+    if(!orig) return;
+    const m = cloneMission(orig);
     delete m.rapportFichier; delete m.rapportAt;
     const res = await Store.save(m);
     await this.loadMissions();
@@ -1757,6 +1834,11 @@ const App = {
         <div class="settings-row"><div class="k">Fichier d'audits</div><button class="btn ghost" onclick="App.revealFolder()">Ouvrir l'emplacement</button></div>
         <div class="settings-row"><div class="k">Sauvegardes automatiques</div><button class="btn ghost" onclick="App.revealBackups()">Ouvrir le dossier</button></div>
         <div class="field-hint" style="margin:-4px 0 0;">Une copie de sécurité est conservée automatiquement avant chaque modification (30 derniers jours), au cas où un audit serait perdu ou corrompu.</div>
+
+        <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--border);">
+          <div class="login-field"><label>Votre nom</label><input type="text" value="${esc(Store.editorName())}" placeholder="ex : Marie Dupont" oninput="Store.setEditorName(this.value)"/></div>
+          <div class="field-hint">Utilisé uniquement pour l'historique des modifications de chaque audit (qui a fait quoi), sur cet ordinateur.</div>
+        </div>
 
         ${!f.editing ? `
           <div class="settings-row"><div class="k">Identifiant / code d'accès</div><button class="btn" onclick="App.toggleEditCode()">Changer</button></div>
@@ -2250,6 +2332,24 @@ const App = {
             </tr>`).join('')}
           </tbody>
         </table></div>`}
+      </div>
+
+      <div class="panel no-print">
+        <div class="panel-head"><h2>Historique des modifications</h2></div>
+        <div class="panel-body">
+          ${(m.historique&&m.historique.length) ? `
+          <div class="table-wrap"><table>
+            <thead><tr><th>Date</th><th>Par</th><th>Modification</th></tr></thead>
+            <tbody>
+              ${m.historique.slice().reverse().map(h=>`<tr>
+                <td class="tnum" style="white-space:nowrap;">${formatDateTime(h.at)}</td>
+                <td>${esc(h.auteur)||'—'}</td>
+                <td>${esc(h.resume)}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table></div>
+          ` : `<div class="divider-note">Aucun historique pour l'instant.</div>`}
+        </div>
       </div>
     `;
   },

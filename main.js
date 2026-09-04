@@ -21,8 +21,11 @@ const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
 
 /** In-memory session state, held ONLY in the trusted main process.
  *  The renderer never sets this directly — it is only ever set by a
- *  successful space:create / space:unlock call, and cleared on space:lock. */
-let session = { folder: null, identifiant: null };
+ *  successful space:create / space:unlock call, and cleared on space:lock.
+ *  `key` is the AES-256 key used to encrypt audits.json at rest, derived
+ *  from the access code — never written to disk, never sent to the
+ *  renderer, and lost the moment the space is locked. */
+let session = { folder: null, identifiant: null, key: null };
 
 let mainWindow;
 
@@ -54,6 +57,33 @@ function verifyCode(code, salt, hash) {
   return crypto.timingSafeEqual(a, b);
 }
 
+/* ---------------- encryption at rest ----------------
+ * audits.json (and, transitively, its backups) is encrypted with AES-256-GCM
+ * using a key derived from the access code via scrypt — a *different* salt
+ * than the one used for the login hash, kept in espace.json (a salt is safe
+ * to store openly; without the actual code, the key can't be re-derived).
+ * The key lives only in `session.key`, in this process's memory. Without it
+ * (space locked, or the file opened outside the app), the file is opaque
+ * ciphertext — someone with direct access to the shared folder can no
+ * longer just read audits.json in a text editor. */
+function deriveEncryptionKey(code, encSalt) {
+  return crypto.scryptSync(String(code), encSalt, 32);
+}
+function encryptJSON(obj, key) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const enc = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(obj), 'utf8')), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return JSON.stringify({ enc: 1, iv: iv.toString('hex'), tag: tag.toString('hex'), data: enc.toString('hex') });
+}
+function decryptJSON(raw, key) {
+  const envelope = JSON.parse(raw);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'hex'));
+  decipher.setAuthTag(Buffer.from(envelope.tag, 'hex'));
+  const dec = Buffer.concat([decipher.update(Buffer.from(envelope.data, 'hex')), decipher.final()]);
+  return JSON.parse(dec.toString('utf8'));
+}
+
 /* ---------------- file helpers ---------------- */
 function configPath(folder) { return path.join(folder, CONFIG_FILE); }
 function dataPath(folder) { return path.join(folder, DATA_FILE); }
@@ -69,7 +99,9 @@ async function readMissions(folder) {
   try {
     const raw = await fsp.readFile(dataPath(folder), 'utf8');
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (Array.isArray(parsed)) return parsed; // legacy plaintext file, from before encryption
+    if (parsed && parsed.enc === 1 && session.key) return decryptJSON(raw, session.key);
+    return [];
   } catch (e) {
     return [];
   }
@@ -114,7 +146,19 @@ async function backupBeforeWrite(folder) {
 
 async function writeMissions(folder, missions) {
   await backupBeforeWrite(folder);
-  await atomicWrite(dataPath(folder), JSON.stringify(missions, null, 2));
+  const content = session.key ? encryptJSON(missions, session.key) : JSON.stringify(missions, null, 2);
+  await atomicWrite(dataPath(folder), content);
+}
+
+/** One-time upgrade path: if audits.json is still a legacy plaintext array
+ *  (from before encryption at rest was added), re-save it encrypted now
+ *  that we have a key. No-op for an already-encrypted or missing file. */
+async function migrateToEncryptedIfNeeded(folder) {
+  try {
+    const raw = await fsp.readFile(dataPath(folder), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) await writeMissions(folder, parsed);
+  } catch (e) { /* missing file, or already encrypted — nothing to do */ }
 }
 
 function requireSession() {
@@ -154,18 +198,20 @@ ipcMain.handle('space:create', async (evt, { folder, identifiant, code }) => {
       return { ok: false, error: "Un espace d'audits existe déjà dans ce dossier. Utilisez plutôt « Rejoindre un espace existant »." };
     }
     const cred = makeCredential(code);
+    const encSalt = crypto.randomBytes(16).toString('hex');
     const config = {
       version: 1,
       identifiant: identifiant.trim(),
       salt: cred.salt,
       hash: cred.hash,
+      encSalt,
       createdAt: new Date().toISOString(),
     };
     await atomicWrite(configPath(folder), JSON.stringify(config, null, 2));
+    session = { folder, identifiant: config.identifiant, key: deriveEncryptionKey(code, encSalt) };
     if (!fs.existsSync(dataPath(folder))) {
-      await atomicWrite(dataPath(folder), JSON.stringify([], null, 2));
+      await writeMissions(folder, []);
     }
-    session = { folder, identifiant: config.identifiant };
     writeSettings({ lastFolder: folder });
     return { ok: true, folder };
   } catch (e) {
@@ -178,13 +224,20 @@ ipcMain.handle('space:unlock', async (evt, { folder, identifiant, code }) => {
     if (!folder || !fs.existsSync(configPath(folder))) {
       return { ok: false, error: "Aucun espace d'audits trouvé dans ce dossier." };
     }
-    const config = JSON.parse(await fsp.readFile(configPath(folder), 'utf8'));
+    let config = JSON.parse(await fsp.readFile(configPath(folder), 'utf8'));
     const idMatch = String(identifiant || '').trim().toLowerCase() === String(config.identifiant || '').trim().toLowerCase();
     const codeMatch = verifyCode(code || '', config.salt, config.hash);
     if (!idMatch || !codeMatch) {
       return { ok: false, error: "Identifiant ou code d'accès incorrect." };
     }
-    session = { folder, identifiant: config.identifiant };
+    // Espace created before encryption at rest existed — add a salt now,
+    // once, so the data file can start being encrypted from here on.
+    if (!config.encSalt) {
+      config = Object.assign({}, config, { encSalt: crypto.randomBytes(16).toString('hex') });
+      await atomicWrite(configPath(folder), JSON.stringify(config, null, 2));
+    }
+    session = { folder, identifiant: config.identifiant, key: deriveEncryptionKey(code, config.encSalt) };
+    await migrateToEncryptedIfNeeded(folder);
     writeSettings({ lastFolder: folder });
     return { ok: true, folder };
   } catch (e) {
@@ -197,16 +250,25 @@ ipcMain.handle('space:changeCode', async (evt, { newIdentifiant, newCode }) => {
     requireSession();
     if (!newIdentifiant || !newIdentifiant.trim()) return { ok: false, error: "L'identifiant est requis." };
     if (!newCode || newCode.length < 4) return { ok: false, error: "Le code d'accès doit contenir au moins 4 caractères." };
+    // The encryption key is derived from the code, so changing it means
+    // decrypting audits.json with the OLD key before it's gone, then
+    // re-encrypting with the new one — read it first, change nothing until
+    // that succeeds.
+    const missions = await readMissions(session.folder);
     const cred = makeCredential(newCode);
+    const encSalt = crypto.randomBytes(16).toString('hex');
     const config = {
       version: 1,
       identifiant: newIdentifiant.trim(),
       salt: cred.salt,
       hash: cred.hash,
+      encSalt,
       createdAt: new Date().toISOString(),
     };
     await atomicWrite(configPath(session.folder), JSON.stringify(config, null, 2));
     session.identifiant = config.identifiant;
+    session.key = deriveEncryptionKey(newCode, encSalt);
+    await writeMissions(session.folder, missions);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e.code === 'not_unlocked' ? "Session verrouillée." : e.message };
@@ -223,7 +285,7 @@ ipcMain.handle('space:lastFolder', async () => {
 });
 
 ipcMain.handle('space:lock', async () => {
-  session = { folder: null, identifiant: null };
+  session = { folder: null, identifiant: null, key: null };
   return { ok: true };
 });
 

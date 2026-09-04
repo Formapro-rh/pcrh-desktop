@@ -1232,6 +1232,9 @@ const CHANGELOG = {
     "Un domaine entier peut être marqué « Non applicable » pour un audit donné (ex : BDESE pour une petite structure) — il est alors exclu du score, sans perdre les réponses déjà saisies.",
     "Notification de bureau à l'ouverture de l'application s'il existe des non-conformités en retard.",
   ],
+  '1.11.0': [
+    "Le fichier d'audits est désormais chiffré dans le dossier partagé (clé dérivée de votre code d'accès) : plus personne ne peut en lire le contenu en l'ouvrant directement, sans passer par l'application.",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -2061,6 +2064,8 @@ const App = {
         <div class="settings-row"><div class="k">Identifiant actuel</div><div class="v">${esc(this.state.auth.identifiant)}</div></div>
         <div class="settings-row"><div class="k">Dossier de données</div><div class="v" style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(this.state.auth.folder)}">${esc(this.state.auth.folder)}</div></div>
         <div class="settings-row"><div class="k">Fichier d'audits</div><button class="btn ghost" onclick="App.revealFolder()">Ouvrir l'emplacement</button></div>
+        <div class="settings-row"><div class="k">Chiffrement des données</div><div class="v" style="color:var(--good);">Activé</div></div>
+        <div class="field-hint" style="margin:-4px 0 0;">Le fichier d'audits est chiffré avec une clé dérivée de votre code d'accès : illisible sans lui, y compris en l'ouvrant directement depuis le dossier partagé.</div>
         <div class="settings-row"><div class="k">Sauvegardes automatiques</div><button class="btn ghost" onclick="App.revealBackups()">Ouvrir le dossier</button></div>
         <div class="field-hint" style="margin:-4px 0 0;">Une copie de sécurité est conservée automatiquement avant chaque modification (30 derniers jours), au cas où un audit serait perdu ou corrompu.</div>
 

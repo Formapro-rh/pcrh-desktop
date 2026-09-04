@@ -1235,6 +1235,9 @@ const CHANGELOG = {
   '1.11.0': [
     "Le fichier d'audits est désormais chiffré dans le dossier partagé (clé dérivée de votre code d'accès) : plus personne ne peut en lire le contenu en l'ouvrant directement, sans passer par l'application.",
   ],
+  '1.12.0': [
+    "L'écran de connexion ne propose plus de créer un espace librement — cette action se fait désormais depuis Paramètres, réservée à qui a déjà accès à un espace existant.",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -1259,6 +1262,7 @@ const App = {
     draft:null, openCats:new Set(CATEGORIES_TEMPLATE.map(c=>c.id)),
     reportId:null, confirm:null, conflict:null, toast:'',
     showSettings:false, settingsForm:null,
+    showCreateSpace:false, newSpaceForm:null,
     openRefFor:null,
     reportGenBusy:false,
     whatsNew:null,
@@ -1775,6 +1779,37 @@ const App = {
   },
   async revealFolder(){ await window.api.revealDataFile(); },
   async revealBackups(){ await window.api.openBackupsFolder(); },
+
+  /* ---- create an additional espace, from Settings only (never on the
+   *  public login screen) — keeps that ability in the hands of whoever
+   *  already has valid credentials for an existing espace. ---- */
+  openCreateSpaceModal(){
+    this.state.newSpaceForm = { folder:'', identifiant:'', code:'', code2:'', error:'', busy:false };
+    this.state.showCreateSpace = true;
+    this.render();
+  },
+  closeCreateSpaceModal(){ this.state.showCreateSpace = false; this.render(); },
+  updateNewSpaceField(field, value){ this.state.newSpaceForm[field] = value; },
+  async chooseNewSpaceFolder(){
+    const res = await window.api.chooseFolder();
+    if(res.canceled) return;
+    this.state.newSpaceForm.folder = res.path;
+    this.render();
+  },
+  async submitCreateNewSpace(){
+    const f = this.state.newSpaceForm;
+    if(!f.folder){ f.error = "Choisissez d'abord un dossier pour ce nouvel espace."; this.render(); return; }
+    if(!f.identifiant || !f.identifiant.trim()){ f.error = "L'identifiant est requis."; this.render(); return; }
+    if(f.code !== f.code2){ f.error = "Les deux codes saisis ne correspondent pas."; this.render(); return; }
+    f.busy = true; f.error=''; this.render();
+    const res = await window.api.createSpace({ folder: f.folder, identifiant: f.identifiant, code: f.code });
+    f.busy = false;
+    if(!res.ok){ f.error = res.error; this.render(); return; }
+    this.state.showCreateSpace = false;
+    this.state.showSettings = false;
+    await this.onUnlocked(res.folder);
+    this.showToast('Nouvel espace créé — vous y êtes maintenant connecté');
+  },
   async copyAuditDataForClaude(id){
     const m = this.state.missions.find(x=>x.id===id);
     if(!m) return;
@@ -1912,25 +1947,16 @@ const App = {
         </div>
       </div>
 
-      <div class="tabs">
-        <button class="tab ${a.tab==='join'?'active':''}" onclick="App.setAuthTab('join')">Rejoindre un espace</button>
-        <button class="tab ${a.tab==='create'?'active':''}" onclick="App.setAuthTab('create')">Créer un espace</button>
-      </div>
-
       ${a.error ? `<div class="login-error">${icon('x',14)} ${esc(a.error)}</div>` : ''}
 
-      ${a.tab==='join' ? `
-        <div class="login-field"><label>Identifiant</label><input type="text" value="${esc(a.formIdentifiant)}" placeholder="ex : Cabinet Alfred Gory" oninput="App.updateAuthField('formIdentifiant', this.value)"/></div>
-        <div class="login-field"><label>Code d'accès</label><input type="password" value="${esc(a.formCode)}" placeholder="••••••••" oninput="App.updateAuthField('formCode', this.value)" onkeydown="if(event.key==='Enter') App.submitJoin()"/></div>
-        <button class="btn-login" ${a.busy?'disabled':''} onclick="App.submitJoin()">${a.busy?'Connexion…':'Se connecter'}</button>
-        <div class="login-hint">Utilisez l'identifiant et le code d'accès partagés par votre équipe pour ce dossier. Si ce dossier ne contient pas encore d'espace d'audits, utilisez l'onglet « Créer un espace ».</div>
-      ` : `
-        <div class="login-field"><label>Identifiant de l'espace</label><input type="text" value="${esc(a.formIdentifiant)}" placeholder="ex : Cabinet Alfred Gory" oninput="App.updateAuthField('formIdentifiant', this.value)"/></div>
-        <div class="login-field"><label>Code d'accès</label><input type="password" value="${esc(a.formCode)}" placeholder="Au moins 4 caractères" oninput="App.updateAuthField('formCode', this.value)"/></div>
-        <div class="login-field"><label>Confirmer le code d'accès</label><input type="password" value="${esc(a.formCode2)}" placeholder="Ressaisir le code" oninput="App.updateAuthField('formCode2', this.value)" onkeydown="if(event.key==='Enter') App.submitCreate()"/></div>
-        <button class="btn-login" ${a.busy?'disabled':''} onclick="App.submitCreate()">${a.busy?'Création…':"Créer l'espace et se connecter"}</button>
-        <div class="login-hint">Cet identifiant et ce code d'accès seront demandés à toute personne ouvrant l'application sur ce dossier. Placez ce dossier sur un espace partagé (lecteur réseau, OneDrive, Google Drive…) pour que toute l'équipe travaille sur les mêmes audits.</div>
-      `}
+      ${a.formFolder && a.folderExists===false ? `
+        <div class="login-hint" style="color:var(--warning); margin-bottom:12px;">Aucun espace d'audits n'existe encore dans ce dossier. Demandez à la personne qui gère les audits d'en créer un depuis Paramètres → Créer un nouvel espace.</div>
+      ` : ''}
+
+      <div class="login-field"><label>Identifiant</label><input type="text" value="${esc(a.formIdentifiant)}" placeholder="ex : Cabinet Alfred Gory" oninput="App.updateAuthField('formIdentifiant', this.value)"/></div>
+      <div class="login-field"><label>Code d'accès</label><input type="password" value="${esc(a.formCode)}" placeholder="••••••••" oninput="App.updateAuthField('formCode', this.value)" onkeydown="if(event.key==='Enter') App.submitJoin()"/></div>
+      <button class="btn-login" ${a.busy?'disabled':''} onclick="App.submitJoin()">${a.busy?'Connexion…':'Se connecter'}</button>
+      <div class="login-hint">Utilisez l'identifiant et le code d'accès partagés par votre équipe pour ce dossier.</div>
     </div></div>`;
   },
 
@@ -1968,6 +1994,7 @@ const App = {
       ${this.state.confirm ? this.renderConfirm() : ''}
       ${this.state.conflict ? this.renderConflict() : ''}
       ${this.state.showSettings ? this.renderSettings() : ''}
+      ${this.state.showCreateSpace ? this.renderCreateSpaceModal() : ''}
       ${this.state.whatsNew ? this.renderWhatsNew() : ''}
       <div id="toast" class="toast ${this.state.toast?'show':''}">${esc(this.state.toast)}</div>
     `;
@@ -2098,7 +2125,38 @@ const App = {
           </div>
         </div>
 
+        <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--border);">
+          <div style="font-weight:600; font-size:13px; margin-bottom:4px;">Créer un nouvel espace</div>
+          <div class="field-hint" style="margin-bottom:10px;">Pour démarrer un espace d'audits séparé (autre dossier partagé, autre identifiant/code) — vous y serez automatiquement connecté après création. Volontairement absent de l'écran de connexion pour que seule une personne ayant déjà accès à un espace existant puisse en créer un nouveau.</div>
+          <button class="btn" onclick="App.openCreateSpaceModal()">${icon('plus',15)} Créer un nouvel espace…</button>
+        </div>
+
         <div class="row" style="margin-top:18px;"><button class="btn ghost" onclick="App.closeSettings()">Fermer</button></div>
+      </div>
+    </div>`;
+  },
+
+  renderCreateSpaceModal(){
+    const f = this.state.newSpaceForm;
+    return `<div class="modal-back" onclick="if(event.target===this) App.closeCreateSpaceModal()">
+      <div class="modal" style="max-width:440px;">
+        <h3>Créer un nouvel espace</h3>
+        <p>Un espace totalement séparé de celui-ci, avec son propre dossier partagé et ses propres identifiants.</p>
+        ${f.error ? `<div class="login-error">${icon('x',14)} ${esc(f.error)}</div>` : ''}
+        <div class="field" style="margin-bottom:12px;">
+          <label>Dossier du nouvel espace</label>
+          <div class="folder-row">
+            <div class="folder-display">${f.folder ? esc(f.folder) : "Aucun dossier sélectionné"}</div>
+            <button class="btn" onclick="App.chooseNewSpaceFolder()">${icon('folder',15)} Choisir…</button>
+          </div>
+        </div>
+        <div class="login-field"><label>Identifiant de l'espace</label><input type="text" value="${esc(f.identifiant)}" placeholder="ex : Cabinet Alfred Gory" oninput="App.updateNewSpaceField('identifiant', this.value)"/></div>
+        <div class="login-field"><label>Code d'accès</label><input type="password" value="${esc(f.code)}" placeholder="Au moins 4 caractères" oninput="App.updateNewSpaceField('code', this.value)"/></div>
+        <div class="login-field"><label>Confirmer le code d'accès</label><input type="password" value="${esc(f.code2)}" placeholder="Ressaisir le code" oninput="App.updateNewSpaceField('code2', this.value)" onkeydown="if(event.key==='Enter') App.submitCreateNewSpace()"/></div>
+        <div class="row" style="margin-top:14px;">
+          <button class="btn ghost" onclick="App.closeCreateSpaceModal()">Annuler</button>
+          <button class="btn primary" ${f.busy?'disabled':''} onclick="App.submitCreateNewSpace()">${f.busy?'Création…':"Créer l'espace"}</button>
+        </div>
       </div>
     </div>`;
   },

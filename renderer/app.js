@@ -941,6 +941,7 @@ function icon(name, size){
     folder:`<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" ${p}/>`,
     scale:`<path d="M12 3v18M6 7h12M6 7l-3.5 7a3.5 3.5 0 0 0 7 0L6 7ZM18 7l-3.5 7a3.5 3.5 0 0 0 7 0L18 7Z" ${p}/><path d="M9 21h6" ${p}/>`,
     download:`<path d="M12 3v12" ${p}/><polyline points="7 10 12 15 17 10" ${p}/><path d="M5 21h14" ${p}/>`,
+    building:`<rect x="4" y="3" width="16" height="18" rx="1" ${p}/><line x1="9" y1="7" x2="9" y2="7.01" ${p}/><line x1="15" y1="7" x2="15" y2="7.01" ${p}/><line x1="9" y1="11" x2="9" y2="11.01" ${p}/><line x1="15" y1="11" x2="15" y2="11.01" ${p}/><line x1="9" y1="15" x2="9" y2="15.01" ${p}/><line x1="15" y1="15" x2="15" y2="15.01" ${p}/><line x1="10" y1="21" x2="10" y2="18" ${p}/><line x1="14" y1="21" x2="14" y2="18" ${p}/>`,
   };
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24">${paths[name]||''}</svg>`;
 }
@@ -1161,6 +1162,9 @@ const CHANGELOG = {
     "Historique des modifications sur chaque audit (qui a fait quoi, et quand) — visible en bas de la fiche de l'audit.",
     "Nouveau champ « Votre nom » dans Paramètres, pour que l'historique vous attribue vos modifications.",
   ],
+  '1.6.0': [
+    "Nouvelle section « Clients » : vue consolidée de tous les audits d'une même entreprise, avec leur évolution dans le temps.",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -1312,6 +1316,13 @@ const App = {
     this.state.view='form'; window.scrollTo(0,0); this.render();
   },
   viewReport(id){ this.state.reportId=id; this.state.view='report'; window.scrollTo(0,0); this.render(); },
+  viewClient(name){ this.state.clientName=name; this.state.view='client'; window.scrollTo(0,0); this.render(); },
+  viewClientByMissionId(id, evt){
+    if(evt) evt.stopPropagation();
+    const m = this.state.missions.find(x=>x.id===id);
+    if(!m || !m.client) return;
+    this.viewClient(m.client);
+  },
 
   toggleRef(critId, evt){
     if(evt) evt.stopPropagation();
@@ -1716,6 +1727,7 @@ const App = {
         <nav class="nav">
           <button class="nav-item ${this.state.view==='dashboard'?'active':''}" onclick="App.setView('dashboard')">${icon('dashboard')} Tableau de bord</button>
           <button class="nav-item ${this.state.view==='form'||this.state.view==='report'?'active':''}" onclick="App.setView('dashboard')">${icon('list')} Missions auditées</button>
+          <button class="nav-item ${this.state.view==='clients'||this.state.view==='client'?'active':''}" onclick="App.setView('clients')">${icon('building',16)} Clients</button>
           <button class="nav-item ${this.state.view==='trash'?'active':''}" onclick="App.setView('trash')">${icon('trash',16)} Corbeille${this.trashCount()>0?` <span class="mono" style="margin-left:auto; font-size:11px; color:var(--ink-3);">${this.trashCount()}</span>`:''}</button>
         </nav>
         <div class="sidebar-foot">
@@ -1730,6 +1742,8 @@ const App = {
           ${this.state.view==='dashboard' ? this.renderDashboard() :
             this.state.view==='form' ? this.renderForm() :
             this.state.view==='report' ? this.renderReport() :
+            this.state.view==='clients' ? this.renderClients() :
+            this.state.view==='client' ? this.renderClientDetail() :
             this.state.view==='trash' ? this.renderTrash() : ''}
         </div>
       </div>
@@ -1953,7 +1967,7 @@ const App = {
               const overdue = overdueNCCount(m);
               return `<tr onclick="App.viewReport('${m.id}')">
                 <td class="ref">${esc(m.reference)}</td>
-                <td class="client-cell">${esc(m.client)||'—'}</td>
+                <td class="client-cell">${m.client ? `<a href="#" class="client-link" onclick="App.viewClientByMissionId('${m.id}', event); return false;">${esc(m.client)}</a>` : '—'}</td>
                 <td>${esc(m.consultant)||'—'}</td>
                 <td>${esc(m.auditeur)||'—'}</td>
                 <td class="tnum">${formatDate(m.dateAudit)}</td>
@@ -2070,6 +2084,122 @@ const App = {
         <div class="bar-track"><div class="bar-fill" style="width:${Math.round(r.count/max*100)}%; background:var(--critical)"></div></div>
       </div>
     `).join('')}</div>`;
+  },
+
+  /* ---------- Clients ---------- */
+  /** Groups every (non-deleted) mission by client name — case/whitespace-
+   *  insensitively, since it's freeform text — and computes, per client, the
+   *  audit count, latest audit, latest score, and its evolution versus the
+   *  audit before it. */
+  clientsSummary(){
+    const all = this.state.missions.filter(m=>!m.deletedAt);
+    const byKey = {};
+    all.forEach(m=>{
+      const name = (m.client||'').trim();
+      const key = name.toLowerCase() || ' ';
+      if(!byKey[key]) byKey[key] = { name: name || '(Sans nom)', missions: [] };
+      byKey[key].missions.push(m);
+    });
+    return Object.values(byKey).map(g=>{
+      const sorted = g.missions.slice().sort((a,b)=> (b.dateAudit||'').localeCompare(a.dateAudit||''));
+      const scores = sorted.map(computeScores);
+      return {
+        name: g.name,
+        count: sorted.length,
+        lastDate: sorted[0].dateAudit,
+        lastScore: scores[0].global,
+        prevScore: scores.length>1 ? scores[1].global : null,
+        missions: sorted,
+      };
+    }).sort((a,b)=> (b.lastDate||'').localeCompare(a.lastDate||''));
+  },
+
+  renderClients(){
+    const clients = this.clientsSummary();
+    return `
+      <div class="pagehead">
+        <div>
+          <h1>Clients</h1>
+          <div class="lede">Vue consolidée des audits réalisés, par entreprise cliente.</div>
+        </div>
+      </div>
+      <div class="panel">
+        ${clients.length===0 ? `<div class="empty-state"><div class="glyph">RH</div><h3>Aucun client pour le moment</h3><p>Les clients apparaissent ici dès qu'un premier audit est créé.</p></div>` : `
+        <div class="table-wrap"><table>
+          <thead><tr><th>Entreprise</th><th>Audits</th><th>Dernier audit</th><th>Dernier score</th><th>Évolution</th></tr></thead>
+          <tbody>
+            ${clients.map(c=>{
+              const delta = (c.lastScore!=null && c.prevScore!=null) ? c.lastScore - c.prevScore : null;
+              return `<tr onclick="App.viewClient('${esc(c.name).replace(/'/g,"\\'")}')">
+                <td class="client-cell">${esc(c.name)}</td>
+                <td class="tnum">${c.count}</td>
+                <td class="tnum">${formatDate(c.lastDate)}</td>
+                <td><span class="score-chip ${scoreClass(c.lastScore)}">${c.lastScore!=null?c.lastScore:'—'}${c.lastScore!=null?'<span class="u"> %</span>':''}</span></td>
+                <td class="tnum">${delta==null ? '<span style="color:var(--ink-3)">—</span>' : delta===0 ? '<span style="color:var(--ink-3)">= 0 pt</span>' : `<span style="color:${delta>0?'var(--good)':'var(--critical)'}">${delta>0?'▲':'▼'} ${Math.abs(delta)} pt${Math.abs(delta)>1?'s':''}</span>`}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table></div>`}
+      </div>
+    `;
+  },
+
+  renderClientDetail(){
+    const name = this.state.clientName;
+    const clients = this.clientsSummary();
+    const c = clients.find(x=>x.name===name);
+    if(!c) return `<div class="empty-state"><h3>Client introuvable</h3><button class="btn" onclick="App.setView('clients')">Retour aux clients</button></div>`;
+    const scored = c.missions.map(computeScores);
+    const withScore = scored.filter(s=>s.global!=null);
+    const avg = withScore.length ? Math.round(withScore.reduce((a,s)=>a+s.global,0)/withScore.length) : null;
+    const openNC = c.missions.reduce((a,m)=>a+openNCCount(m),0);
+    return `
+      <div class="pagehead">
+        <div class="hactions" style="margin-bottom:8px;">
+          <button class="btn ghost" onclick="App.setView('clients')">${icon('back',15)} Retour aux clients</button>
+        </div>
+        <div>
+          <h1>${esc(c.name)}</h1>
+          <div class="lede">${c.count} audit${c.count>1?'s':''} réalisé${c.count>1?'s':''} pour cette entreprise.</div>
+        </div>
+      </div>
+
+      <div class="kpi-row">
+        <div class="kpi"><div class="label">Audits réalisés</div><div class="value tnum">${c.count}</div></div>
+        <div class="kpi"><div class="label">Score moyen</div><div class="value tnum" style="color:${scoreColor(avg)}">${avg!=null?avg+' %':'—'}</div></div>
+        <div class="kpi"><div class="label">Dernier score</div><div class="value tnum" style="color:${scoreColor(c.lastScore)}">${c.lastScore!=null?c.lastScore+' %':'—'}</div></div>
+        <div class="kpi"><div class="label">Non-conformités ouvertes</div><div class="value tnum" style="color:${openNC>0?'var(--critical)':'var(--good)'}">${openNC}</div></div>
+      </div>
+
+      ${c.missions.length>=2 ? `
+      <div class="panel">
+        <div class="panel-head"><h2>Évolution du score</h2></div>
+        <div class="panel-body chart-wrap">${this.renderTrendChart(c.missions, scored)}</div>
+      </div>` : ''}
+
+      <div class="panel">
+        <div class="panel-head"><h2>Historique des audits</h2></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Référence</th><th>Service audité</th><th>Auditeur</th><th>Date d'audit</th><th>Statut</th><th>Score</th><th>NC ouvertes</th></tr></thead>
+          <tbody>
+            ${c.missions.map(m=>{
+              const sc = computeScores(m);
+              const nc = openNCCount(m);
+              const overdue = overdueNCCount(m);
+              return `<tr onclick="App.viewReport('${m.id}')">
+                <td class="ref">${esc(m.reference)}</td>
+                <td>${esc(m.consultant)||'—'}</td>
+                <td>${esc(m.auditeur)||'—'}</td>
+                <td class="tnum">${formatDate(m.dateAudit)}</td>
+                <td><span class="badge ${m.statut}"><span class="bdot"></span>${STATUT_MISSION[m.statut]||m.statut}</span></td>
+                <td><span class="score-chip ${scoreClass(sc.global)}">${sc.global!=null?sc.global:'—'}${sc.global!=null?'<span class="u"> %</span>':''}</span></td>
+                <td class="tnum">${nc>0?`<span class="badge ouvert" title="${overdue>0?overdue+' en retard':''}"><span class="bdot"></span>${nc}${overdue>0?' ⚠':''}</span>`:'<span style="color:var(--ink-3)">0</span>'}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table></div>
+      </div>
+    `;
   },
 
   /* ---------- Form ---------- */

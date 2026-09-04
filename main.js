@@ -8,7 +8,7 @@ const { z } = require('zod');
 const { zodOutputFormat } = require('@anthropic-ai/sdk/helpers/zod');
 const {
   Document, Packer, Paragraph, HeadingLevel, Table, TableRow, TableCell,
-  TextRun, WidthType, AlignmentType, BorderStyle,
+  TextRun, WidthType, AlignmentType, BorderStyle, ImageRun,
 } = require('docx');
 const XLSX = require('xlsx');
 const { autoUpdater } = require('electron-updater');
@@ -90,6 +90,75 @@ function decryptJSON(raw, key) {
 function configPath(folder) { return path.join(folder, CONFIG_FILE); }
 function dataPath(folder) { return path.join(folder, DATA_FILE); }
 function gridOverridesPath(folder) { return path.join(folder, GRID_OVERRIDES_FILE); }
+
+/* ---------------- logo du cabinet ---------------- */
+const LOGO_EXT_RE = /^logo\.(png|jpe?g|gif)$/i;
+async function findLogoFile(folder) {
+  try {
+    const files = await fsp.readdir(folder);
+    const found = files.find(f => LOGO_EXT_RE.test(f));
+    return found ? path.join(folder, found) : null;
+  } catch (e) {
+    return null;
+  }
+}
+function mimeForExt(ext) {
+  ext = ext.toLowerCase();
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  return `image/${ext}`;
+}
+/** Reads just enough of a PNG/JPEG/GIF header to get its pixel dimensions,
+ *  so the logo can be embedded in the Word report without being stretched
+ *  or squished — no extra dependency needed for something this small. */
+function getImageDimensions(buffer, ext) {
+  try {
+    ext = ext.toLowerCase();
+    if (ext === 'png') {
+      return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+    }
+    if (ext === 'gif') {
+      return { width: buffer.readUInt16LE(6), height: buffer.readUInt16LE(8) };
+    }
+    if (ext === 'jpg' || ext === 'jpeg') {
+      let offset = 2;
+      while (offset < buffer.length - 8) {
+        if (buffer[offset] !== 0xff) { offset++; continue; }
+        const marker = buffer[offset + 1];
+        if (marker === 0xd8 || marker === 0xd9) { offset += 2; continue; }
+        if (marker >= 0xd0 && marker <= 0xd7) { offset += 2; continue; }
+        const length = buffer.readUInt16BE(offset + 2);
+        const isSOF = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+        if (isSOF) return { width: buffer.readUInt16BE(offset + 7), height: buffer.readUInt16BE(offset + 5) };
+        offset += 2 + length;
+      }
+    }
+  } catch (e) { /* fall through */ }
+  return null;
+}
+/** Fits nativeW×nativeH inside maxW×maxH, preserving aspect ratio (scales
+ *  up a tiny logo, scales down a large one — never distorts it). */
+function fitImageSize(nativeW, nativeH, maxW, maxH) {
+  if (!nativeW || !nativeH) return { width: maxW, height: maxH };
+  const ratio = Math.min(maxW / nativeW, maxH / nativeH);
+  return { width: Math.round(nativeW * ratio), height: Math.round(nativeH * ratio) };
+}
+/** Reads this espace's logo (if any) ready to embed in a Word report via
+ *  ImageRun — sized to fit a header-sized box. Never throws: a missing or
+ *  unreadable logo just means no logo in the report, not a failed report. */
+async function loadLogoForDocx(folder) {
+  try {
+    const p = await findLogoFile(folder);
+    if (!p) return null;
+    const buffer = await fsp.readFile(p);
+    let ext = path.extname(p).slice(1).toLowerCase();
+    if (ext === 'jpeg') ext = 'jpg'; // docx's ImageRun only knows "jpg", not "jpeg"
+    const dims = getImageDimensions(buffer, ext) || { width: 160, height: 60 };
+    const size = fitImageSize(dims.width, dims.height, 170, 70);
+    return { buffer, type: ext, width: size.width, height: size.height };
+  } catch (e) {
+    return null;
+  }
+}
 function backupDir(folder) { return path.join(folder, BACKUP_DIR_NAME); }
 
 async function atomicWrite(filePath, content) {
@@ -441,6 +510,49 @@ ipcMain.handle('grid:save', async (evt, overrides) => {
   }
 });
 
+ipcMain.handle('logo:get', async () => {
+  try {
+    requireSession();
+    const p = await findLogoFile(session.folder);
+    if (!p) return { ok: true, dataUrl: null };
+    const buf = await fsp.readFile(p);
+    const ext = path.extname(p).slice(1);
+    return { ok: true, dataUrl: `data:${mimeForExt(ext)};base64,${buf.toString('base64')}` };
+  } catch (e) {
+    return { ok: true, dataUrl: null };
+  }
+});
+
+ipcMain.handle('logo:upload', async () => {
+  try {
+    requireSession();
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choisir le logo du cabinet',
+      properties: ['openFile'],
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif'] }],
+    });
+    if (result.canceled || !result.filePaths[0]) return { canceled: true };
+    const existing = await findLogoFile(session.folder);
+    if (existing) await fsp.unlink(existing).catch(() => {});
+    const ext = (path.extname(result.filePaths[0]) || '.png').toLowerCase();
+    await fsp.copyFile(result.filePaths[0], path.join(session.folder, 'logo' + ext));
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.code === 'not_unlocked' ? 'Session verrouillée.' : e.message };
+  }
+});
+
+ipcMain.handle('logo:remove', async () => {
+  try {
+    requireSession();
+    const existing = await findLogoFile(session.folder);
+    if (existing) await fsp.unlink(existing).catch(() => {});
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.code === 'not_unlocked' ? 'Session verrouillée.' : e.message };
+  }
+});
+
 /* ---------------- "Quoi de neuf" : version vue pour la dernière fois sur ce poste ---------------- */
 ipcMain.handle('app:getVersion', async () => app.getVersion());
 
@@ -484,8 +596,15 @@ function textToParagraphs(text, opts) {
     .map(p => new Paragraph({ text: p, spacing: { after: 160 }, ...opts }));
 }
 
-function buildReportDocx({ mission, scores, ai }) {
+function buildReportDocx({ mission, scores, ai, logo }) {
   const children = [];
+
+  if (logo) {
+    children.push(new Paragraph({
+      children: [new ImageRun({ type: logo.type, data: logo.buffer, transformation: { width: logo.width, height: logo.height } })],
+      spacing: { after: 200 },
+    }));
+  }
 
   children.push(new Paragraph({
     text: 'Rapport d\'audit de conformité RH',
@@ -618,7 +737,7 @@ ipcMain.handle('report:generate', async (evt, { mission, scores }) => {
       return { ok: false, error: "Claude n'a pas renvoyé de contenu exploitable. Réessayez." };
     }
 
-    const doc = buildReportDocx({ mission, scores, ai: response.parsed_output });
+    const doc = buildReportDocx({ mission, scores, ai: response.parsed_output, logo: await loadLogoForDocx(session.folder) });
     const buffer = await Packer.toBuffer(doc);
 
     const defaultName = `Rapport - ${safeFileName(mission.client)} - ${safeFileName(mission.reference)}.docx`;

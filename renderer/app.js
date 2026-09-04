@@ -1335,6 +1335,9 @@ const CHANGELOG = {
   '1.19.0': [
     "Recherche et tri des colonnes (dont l'ordre alphabétique) dans la section Clients.",
   ],
+  '1.20.0': [
+    "Logo du cabinet (Paramètres) : affiché dans l'application et intégré automatiquement aux rapports PDF et Word transmis aux clients.",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -1363,6 +1366,7 @@ const App = {
     compareA:null, compareB:null,
     clientsSearch:'', clientsSort:{field:null, dir:'asc'},
     gridOverrides:null, gridOpenCats:new Set(), gridEditingId:null, confirmRemoveQuestion:null, gridSearch:'',
+    logoDataUrl:null, logoBusy:false,
     openRefFor:null,
     reportGenBusy:false,
     whatsNew:null,
@@ -1420,6 +1424,7 @@ const App = {
     this.state.auth.error = '';
     this.state.view = 'dashboard';
     await this.loadGridOverrides();
+    await this.loadLogo();
     await this.loadMissions();
     this.startPolling();
     await this.checkWhatsNew();
@@ -1445,6 +1450,33 @@ const App = {
   async saveGridOverrides(){
     applyGridOverrides(this.state.gridOverrides);
     await window.api.saveGridOverrides(this.state.gridOverrides);
+  },
+
+  /* ---- logo du cabinet ---- */
+  async loadLogo(){
+    try{
+      const res = await window.api.getLogo();
+      this.state.logoDataUrl = (res.ok && res.dataUrl) ? res.dataUrl : null;
+    }catch(e){ this.state.logoDataUrl = null; }
+  },
+  async uploadLogo(){
+    this.state.logoBusy = true; this.render();
+    const res = await window.api.uploadLogo();
+    this.state.logoBusy = false;
+    if(res.canceled){ this.render(); return; }
+    if(!res.ok){ this.showToast(res.error || "Échec de l'import du logo"); return; }
+    await this.loadLogo();
+    this.showToast('Logo mis à jour');
+    this.render();
+  },
+  async removeLogo(){
+    this.state.logoBusy = true; this.render();
+    const res = await window.api.removeLogo();
+    this.state.logoBusy = false;
+    if(!res.ok){ this.showToast(res.error || "Échec de la suppression"); return; }
+    this.state.logoDataUrl = null;
+    this.showToast('Logo retiré');
+    this.render();
   },
 
   /* ---- grid editor ("Gérer la grille") ---- */
@@ -2263,7 +2295,7 @@ const App = {
     return `
       <div class="sidebar no-print">
         <div class="brand">
-          <div class="mark"><div class="seal">RH</div><div class="name">Audits PCRH</div></div>
+          <div class="mark">${this.state.logoDataUrl ? `<img src="${this.state.logoDataUrl}" class="brand-logo"/>` : `<div class="seal">RH</div>`}<div class="name">Audits PCRH</div></div>
           <div class="sub">Audit de conformité RH</div>
         </div>
         <button class="btn-new" onclick="App.newMission()">${icon('plus',16)} Nouvel audit</button>
@@ -2442,6 +2474,18 @@ const App = {
           <div class="row">
             <button class="btn primary" ${f.apiKeyBusy?'disabled':''} onclick="App.saveApiKey()">${f.apiKeyBusy?'Enregistrement…':'Enregistrer la clé'}</button>
             ${f.apiKeySaved ? `<span style="color:var(--good); font-size:12.5px;">✓ Enregistrée</span>` : ''}
+          </div>
+        </div>
+
+        <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--border);">
+          <div style="font-weight:600; font-size:13px; margin-bottom:4px;">Logo du cabinet</div>
+          <div class="field-hint" style="margin-bottom:10px;">Affiché dans l'application et sur les rapports (PDF, Word) transmis aux clients.</div>
+          <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+            ${this.state.logoDataUrl ? `<img src="${this.state.logoDataUrl}" style="max-height:44px; max-width:140px; object-fit:contain; border:1px solid var(--border); border-radius:6px; padding:4px;"/>` : `<div class="field-hint" style="margin:0;">Aucun logo pour l'instant.</div>`}
+            <div class="row" style="margin:0;">
+              <button class="btn" ${this.state.logoBusy?'disabled':''} onclick="App.uploadLogo()">${icon('folder',15)} ${this.state.logoDataUrl ? 'Changer' : 'Importer un logo'}</button>
+              ${this.state.logoDataUrl ? `<button class="btn danger" ${this.state.logoBusy?'disabled':''} onclick="App.removeLogo()">${icon('trash',15)} Retirer</button>` : ''}
+            </div>
           </div>
         </div>
 
@@ -2826,6 +2870,7 @@ const App = {
     const due = auditDueStatus(c.nextAudit);
     const dueColor = due==='overdue' ? 'var(--critical)' : due==='soon' ? 'var(--warning)' : 'var(--ink)';
     return `
+      ${this.state.logoDataUrl ? `<img src="${this.state.logoDataUrl}" style="max-height:56px; max-width:220px; object-fit:contain; margin-bottom:14px; display:block;"/>` : ''}
       <div class="pagehead">
         <div class="hactions" style="margin-bottom:8px;">
           <button class="btn ghost" onclick="App.setView('clients')">${icon('back',15)} Retour aux clients</button>
@@ -3324,6 +3369,7 @@ const App = {
       </div>
 
       <div class="panel">
+        ${this.state.logoDataUrl ? `<div style="padding:18px 24px 0;"><img src="${this.state.logoDataUrl}" style="max-height:56px; max-width:220px; object-fit:contain;"/></div>` : ''}
         <div class="report-head">
           <div>
             <div class="report-id">${esc(m.reference)}</div>

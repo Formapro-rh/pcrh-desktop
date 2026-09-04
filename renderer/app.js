@@ -967,6 +967,15 @@ function icon(name, size){
 function esc(s){
   return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+/** Safely embeds `s` as a single-quoted JS string literal inside an HTML
+ *  attribute (e.g. onclick="App.fn('...')"). Escaping order matters: the
+ *  browser HTML-decodes an attribute's value *before* handing it to the JS
+ *  parser, so escaping for JS must happen first, then esc() for HTML on
+ *  top — esc() alone would turn a `'` into `&#39;`, which decodes right
+ *  back into an unescaped `'` and breaks out of the JS string. */
+function jsAttr(s){
+  return esc(String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'"));
+}
 function uid(prefix){ return prefix+'-'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function genReference(){
   const d = new Date();
@@ -1023,7 +1032,7 @@ function summarizeMissionChanges(oldMission, newMission){
   if(oldMission.statut !== newMission.statut){
     parts.push(`Statut : ${STATUT_MISSION[oldMission.statut]||oldMission.statut} → ${STATUT_MISSION[newMission.statut]||newMission.statut}`);
   }
-  const FIELD_LABEL = { client:'Entreprise', consultant:'Service audité', auditeur:'Auditeur', reference:'Référence', perimetre:'Périmètre', dateAudit:"Date d'audit" };
+  const FIELD_LABEL = { client:'Entreprise', consultant:'Service audité', auditeur:'Auditeur', reference:'Référence', perimetre:'Périmètre', dateAudit:"Date d'audit", prochainAuditPrevu:'Prochain audit prévu' };
   Object.keys(FIELD_LABEL).forEach(f=>{
     if((oldMission[f]||'') !== (newMission[f]||'')) parts.push(`${FIELD_LABEL[f]} modifié`);
   });
@@ -1140,6 +1149,18 @@ function overdueNCCount(mission){
   return (mission.nonConformites||[]).filter(isOverdueNC).length;
 }
 
+/** Urgency of a "prochain audit prévu" date: 'overdue' (past), 'soon'
+ *  (within 30 days), 'ok' (further out), or null (no date set). */
+function auditDueStatus(dateStr){
+  if(!dateStr) return null;
+  const due = new Date(dateStr+'T00:00:00');
+  if(isNaN(due)) return null;
+  const days = Math.round((due.getTime()-Date.now())/(24*60*60*1000));
+  if(days<0) return 'overdue';
+  if(days<=30) return 'soon';
+  return 'ok';
+}
+
 /** Global search: true if `q` (already lowercased) matches this mission's
  *  identity fields, OR any question label / comment in its grid, OR any
  *  field of its non-conformités. Lets the dashboard search box find an audit
@@ -1238,6 +1259,11 @@ const CHANGELOG = {
   '1.12.0': [
     "L'écran de connexion ne propose plus de créer un espace librement — cette action se fait désormais depuis Paramètres, réservée à qui a déjà accès à un espace existant.",
   ],
+  '1.13.0': [
+    "Champ « Prochain audit prévu » par audit, avec rappel visuel sur la fiche client (approche ou dépassement de l'échéance).",
+    "Export PDF / impression de la fiche client (score moyen, évolution, historique des audits).",
+    "Comparaison entre deux audits d'un même client : score par domaine, non-conformités résolues, nouvelles ou toujours ouvertes.",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -1263,6 +1289,7 @@ const App = {
     reportId:null, confirm:null, conflict:null, toast:'',
     showSettings:false, settingsForm:null,
     showCreateSpace:false, newSpaceForm:null,
+    compareA:null, compareB:null,
     openRefFor:null,
     reportGenBusy:false,
     whatsNew:null,
@@ -1440,7 +1467,16 @@ const App = {
     this.render();
   },
   viewReport(id){ this.state.reportId=id; this.state.view='report'; window.scrollTo(0,0); this.render(); },
-  viewClient(name){ this.state.clientName=name; this.state.view='client'; window.scrollTo(0,0); this.render(); },
+  viewClient(name){
+    this.state.clientName=name; this.state.view='client';
+    const c = this.clientsSummary().find(x=>x.name===name);
+    if(c && c.missions.length>=2){
+      this.state.compareA = c.missions[1].id; // second most recent = "avant"
+      this.state.compareB = c.missions[0].id; // most recent = "après"
+    }
+    window.scrollTo(0,0); this.render();
+  },
+  setCompare(which, id){ this.state['compare'+which] = id; this.render(); },
   viewClientByMissionId(id, evt){
     if(evt) evt.stopPropagation();
     const m = this.state.missions.find(x=>x.id===id);
@@ -1609,6 +1645,16 @@ const App = {
     if(!m) return;
     this.showToast('Génération du PDF…');
     const res = await window.api.exportReportPdf({ reference: m.reference });
+    if(res.canceled) return;
+    this.showToast(res.ok ? 'PDF enregistré : '+res.path : (res.error || "Échec de l'export PDF"));
+  },
+  /** Exports whatever is currently on screen (the client detail page) to
+   *  PDF — reuses the same main-process printToPDF plumbing as a single
+   *  audit's export; `reference` there is only ever used for the default
+   *  file name, so the client's name works just as well. */
+  async exportClientPdf(name){
+    this.showToast('Génération du PDF…');
+    const res = await window.api.exportReportPdf({ reference: name });
     if(res.canceled) return;
     this.showToast(res.ok ? 'PDF enregistré : '+res.path : (res.error || "Échec de l'export PDF"));
   },
@@ -2388,6 +2434,7 @@ const App = {
         lastDate: sorted[0].dateAudit,
         lastScore: scores[0].global,
         prevScore: scores.length>1 ? scores[1].global : null,
+        nextAudit: sorted[0].prochainAuditPrevu || null,
         missions: sorted,
       };
     }).sort((a,b)=> (b.lastDate||'').localeCompare(a.lastDate||''));
@@ -2405,16 +2452,19 @@ const App = {
       <div class="panel">
         ${clients.length===0 ? `<div class="empty-state"><div class="glyph">RH</div><h3>Aucun client pour le moment</h3><p>Les clients apparaissent ici dès qu'un premier audit est créé.</p></div>` : `
         <div class="table-wrap"><table>
-          <thead><tr><th>Entreprise</th><th>Audits</th><th>Dernier audit</th><th>Dernier score</th><th>Évolution</th></tr></thead>
+          <thead><tr><th>Entreprise</th><th>Audits</th><th>Dernier audit</th><th>Dernier score</th><th>Évolution</th><th>Prochain audit</th></tr></thead>
           <tbody>
             ${clients.map(c=>{
               const delta = (c.lastScore!=null && c.prevScore!=null) ? c.lastScore - c.prevScore : null;
-              return `<tr onclick="App.viewClient('${esc(c.name).replace(/'/g,"\\'")}')">
+              const due = auditDueStatus(c.nextAudit);
+              const dueColor = due==='overdue' ? 'var(--critical)' : due==='soon' ? 'var(--warning)' : 'var(--ink-2)';
+              return `<tr onclick="App.viewClient('${jsAttr(c.name)}')">
                 <td class="client-cell">${esc(c.name)}</td>
                 <td class="tnum">${c.count}</td>
                 <td class="tnum">${formatDate(c.lastDate)}</td>
                 <td><span class="score-chip ${scoreClass(c.lastScore)}">${c.lastScore!=null?c.lastScore:'—'}${c.lastScore!=null?'<span class="u"> %</span>':''}</span></td>
                 <td class="tnum">${delta==null ? '<span style="color:var(--ink-3)">—</span>' : delta===0 ? '<span style="color:var(--ink-3)">= 0 pt</span>' : `<span style="color:${delta>0?'var(--good)':'var(--critical)'}">${delta>0?'▲':'▼'} ${Math.abs(delta)} pt${Math.abs(delta)>1?'s':''}</span>`}</td>
+                <td class="tnum" style="color:${dueColor}; ${due&&due!=='ok'?'font-weight:600;':''}">${c.nextAudit ? formatDate(c.nextAudit)+(due==='overdue'?' ⚠':'') : '<span style="color:var(--ink-3)">—</span>'}</td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -2432,6 +2482,8 @@ const App = {
     const withScore = scored.filter(s=>s.global!=null);
     const avg = withScore.length ? Math.round(withScore.reduce((a,s)=>a+s.global,0)/withScore.length) : null;
     const openNC = c.missions.reduce((a,m)=>a+openNCCount(m),0);
+    const due = auditDueStatus(c.nextAudit);
+    const dueColor = due==='overdue' ? 'var(--critical)' : due==='soon' ? 'var(--warning)' : 'var(--ink)';
     return `
       <div class="pagehead">
         <div class="hactions" style="margin-bottom:8px;">
@@ -2441,6 +2493,10 @@ const App = {
           <h1>${esc(c.name)}</h1>
           <div class="lede">${c.count} audit${c.count>1?'s':''} réalisé${c.count>1?'s':''} pour cette entreprise.</div>
         </div>
+        <div class="hactions" style="margin-left:auto;">
+          <button class="btn ghost" onclick="window.print()">${icon('printer',15)} Imprimer</button>
+          <button class="btn primary" onclick="App.exportClientPdf('${jsAttr(c.name)}')">${icon('download',15)} Exporter en PDF</button>
+        </div>
       </div>
 
       <div class="kpi-row">
@@ -2448,12 +2504,32 @@ const App = {
         <div class="kpi"><div class="label">Score moyen</div><div class="value tnum" style="color:${scoreColor(avg)}">${avg!=null?avg+' %':'—'}</div></div>
         <div class="kpi"><div class="label">Dernier score</div><div class="value tnum" style="color:${scoreColor(c.lastScore)}">${c.lastScore!=null?c.lastScore+' %':'—'}</div></div>
         <div class="kpi"><div class="label">Non-conformités ouvertes</div><div class="value tnum" style="color:${openNC>0?'var(--critical)':'var(--good)'}">${openNC}</div></div>
+        <div class="kpi"><div class="label">Prochain audit prévu</div><div class="value tnum" style="color:${dueColor}; font-size:22px;">${c.nextAudit?formatDate(c.nextAudit):'—'}</div><div class="sub">${due==='overdue'?'⚠ échéance dépassée':due==='soon'?'dans moins de 30 jours':c.nextAudit?'':'non renseigné'}</div></div>
       </div>
 
       ${c.missions.length>=2 ? `
       <div class="panel">
         <div class="panel-head"><h2>Évolution du score</h2></div>
         <div class="panel-body chart-wrap">${this.renderTrendChart(c.missions, scored)}</div>
+      </div>
+
+      <div class="panel no-print">
+        <div class="panel-head"><h2>Comparer deux audits</h2></div>
+        <div class="panel-body">
+          <div class="form-grid" style="grid-template-columns:1fr 1fr; margin-bottom:16px;">
+            <div class="field"><label>Audit A</label>
+              <select onchange="App.setCompare('A', this.value)">
+                ${c.missions.map(m=>`<option value="${m.id}" ${this.state.compareA===m.id?'selected':''}>${formatDate(m.dateAudit)} — ${esc(m.reference)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field"><label>Audit B</label>
+              <select onchange="App.setCompare('B', this.value)">
+                ${c.missions.map(m=>`<option value="${m.id}" ${this.state.compareB===m.id?'selected':''}>${formatDate(m.dateAudit)} — ${esc(m.reference)}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          ${this.renderComparison(c.missions)}
+        </div>
       </div>` : ''}
 
       <div class="panel">
@@ -2477,6 +2553,76 @@ const App = {
             }).join('')}
           </tbody>
         </table></div>
+      </div>
+    `;
+  },
+
+  /** Domain-by-domain score comparison plus a non-conformités breakdown
+   *  (resolved / new / still open) between two audits of the same client,
+   *  matched by critereId — non-conformités without one (freely added, not
+   *  tied to a grid question) can't be reliably matched across audits and
+   *  are left out of that specific breakdown. */
+  renderComparison(missions){
+    const a = missions.find(m=>m.id===this.state.compareA);
+    const b = missions.find(m=>m.id===this.state.compareB);
+    if(!a || !b) return `<div class="chart-empty">Choisissez deux audits à comparer.</div>`;
+    if(a.id===b.id) return `<div class="chart-empty">Choisissez deux audits différents.</div>`;
+    const scA = computeScores(a), scB = computeScores(b);
+    const deltaGlobal = (scA.global!=null && scB.global!=null) ? scB.global-scA.global : null;
+
+    const domainRows = CATEGORIES_TEMPLATE.map(cat=>{
+      const csA = scA.catScores.find(c=>c.catId===cat.id);
+      const csB = scB.catScores.find(c=>c.catId===cat.id);
+      return { nom: cat.nom, pctA: csA?csA.pct:null, pctB: csB?csB.pct:null };
+    }).filter(r=> r.pctA!=null || r.pctB!=null);
+
+    const openIdsA = new Set((a.nonConformites||[]).filter(n=>n.statut!=='clos' && n.critereId).map(n=>n.critereId));
+    const openIdsB = new Set((b.nonConformites||[]).filter(n=>n.statut!=='clos' && n.critereId).map(n=>n.critereId));
+    const labelFor = critId => (CRITERES_INDEX[critId]||{}).label || critId;
+    const resolved = [...openIdsA].filter(id=>!openIdsB.has(id));
+    const nouvelles = [...openIdsB].filter(id=>!openIdsA.has(id));
+    const persistantes = [...openIdsA].filter(id=>openIdsB.has(id));
+    const arrow = d => d==null ? '<span style="color:var(--ink-3)">—</span>' : d===0 ? '<span style="color:var(--ink-3)">=</span>' : `<span style="color:${d>0?'var(--good)':'var(--critical)'}">${d>0?'▲':'▼'} ${Math.abs(d)}</span>`;
+
+    return `
+      <div style="display:flex; align-items:baseline; gap:14px; margin-bottom:16px; flex-wrap:wrap;">
+        <div style="font-size:12px; color:var(--ink-3); text-transform:uppercase; letter-spacing:0.05em; font-weight:600;">Score global</div>
+        <div class="tnum" style="font-size:19px; font-weight:600;">
+          <span style="color:${scoreColor(scA.global)}">${scA.global!=null?scA.global+'%':'—'}</span>
+          <span style="color:var(--ink-3); margin:0 6px; font-weight:400;">→</span>
+          <span style="color:${scoreColor(scB.global)}">${scB.global!=null?scB.global+'%':'—'}</span>
+        </div>
+        ${deltaGlobal!=null ? `<div style="font-size:13px;">${arrow(deltaGlobal)} pt${Math.abs(deltaGlobal)>1?'s':''}</div>` : ''}
+      </div>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th>Domaine</th><th>${formatDate(a.dateAudit)}</th><th>${formatDate(b.dateAudit)}</th><th>Évolution</th></tr></thead>
+        <tbody>
+          ${domainRows.map(r=>{
+            const d = (r.pctA!=null && r.pctB!=null) ? r.pctB-r.pctA : null;
+            return `<tr>
+              <td>${esc(r.nom)}</td>
+              <td class="tnum" style="color:${scoreColor(r.pctA)}">${r.pctA!=null?r.pctA+'%':'—'}</td>
+              <td class="tnum" style="color:${scoreColor(r.pctB)}">${r.pctB!=null?r.pctB+'%':'—'}</td>
+              <td class="tnum">${arrow(d)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table></div>
+
+      <div style="margin-top:18px; display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:16px;">
+        <div>
+          <div style="font-weight:600; font-size:12.5px; color:var(--good); margin-bottom:6px;">✓ Résolues (${resolved.length})</div>
+          ${resolved.length ? `<ul style="margin:0; padding-left:16px; font-size:12.5px; color:var(--ink-2); line-height:1.6;">${resolved.map(id=>`<li>${esc(labelFor(id))}</li>`).join('')}</ul>` : `<div class="field-hint">Aucune</div>`}
+        </div>
+        <div>
+          <div style="font-weight:600; font-size:12.5px; color:var(--critical); margin-bottom:6px;">Nouvelles (${nouvelles.length})</div>
+          ${nouvelles.length ? `<ul style="margin:0; padding-left:16px; font-size:12.5px; color:var(--ink-2); line-height:1.6;">${nouvelles.map(id=>`<li>${esc(labelFor(id))}</li>`).join('')}</ul>` : `<div class="field-hint">Aucune</div>`}
+        </div>
+        <div>
+          <div style="font-weight:600; font-size:12.5px; color:var(--warning); margin-bottom:6px;">Toujours ouvertes (${persistantes.length})</div>
+          ${persistantes.length ? `<ul style="margin:0; padding-left:16px; font-size:12.5px; color:var(--ink-2); line-height:1.6;">${persistantes.map(id=>`<li>${esc(labelFor(id))}</li>`).join('')}</ul>` : `<div class="field-hint">Aucune</div>`}
+        </div>
       </div>
     `;
   },
@@ -2517,6 +2663,7 @@ const App = {
                 <option value="cloture" ${d.statut==='cloture'?'selected':''}>Clôturé</option>
               </select>
             </div>
+            <div class="field"><label>Prochain audit prévu</label><input type="date" value="${esc(d.prochainAuditPrevu)}" oninput="App.updateDraftField('prochainAuditPrevu', this.value)"/></div>
           </div>
           <div class="form-grid wide" style="margin-top:14px;">
             <div class="field"><label>Périmètre de l'audit</label><textarea placeholder="Objet et périmètre de l'audit de conformité RH…" oninput="App.updateDraftField('perimetre', this.value)">${esc(d.perimetre)}</textarea></div>

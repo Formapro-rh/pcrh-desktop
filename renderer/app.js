@@ -1074,6 +1074,33 @@ const Store = {
   lastAuditeur(){ try{ return localStorage.getItem('pcrh_auditeur')||''; }catch(e){ return ''; } }
 };
 
+/** What changed in each version, shown once via the "Quoi de neuf" screen
+ *  right after an automatic update (App.checkWhatsNew). Add an entry here
+ *  whenever you ship a user-visible change, keyed by the package.json
+ *  version it ships in. */
+const CHANGELOG = {
+  '1.2.0': [
+    "Tableau de bord : nouveaux graphiques du score moyen et des non-conformités ouvertes, par domaine.",
+  ],
+  '1.3.0': [
+    "Sauvegardes automatiques du dossier partagé (une copie par jour, conservée 30 jours) — accessible depuis Paramètres.",
+  ],
+  '1.4.0': [
+    "Cet écran « Quoi de neuf » : il vous informe désormais des changements après chaque mise à jour automatique.",
+  ],
+};
+
+/** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
+function compareVersions(a, b){
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  for(let i=0; i<Math.max(pa.length, pb.length); i++){
+    const na = pa[i]||0, nb = pb[i]||0;
+    if(na!==nb) return na-nb;
+  }
+  return 0;
+}
+
 /* ---------------- App ---------------- */
 const App = {
   state:{
@@ -1086,6 +1113,7 @@ const App = {
     showSettings:false, settingsForm:null,
     openRefFor:null,
     reportGenBusy:false,
+    whatsNew:null,
   },
 
   async boot(){
@@ -1141,8 +1169,29 @@ const App = {
     this.state.view = 'dashboard';
     await this.loadMissions();
     this.startPolling();
+    await this.checkWhatsNew();
     this.render();
   },
+
+  /** Compares the running app's version to the last one recorded on this
+   *  machine (stored locally, never in the shared audits data). If an
+   *  automatic update moved it forward, queue up the "Quoi de neuf" modal
+   *  with every changelog entry in between. Never blocks login on failure. */
+  async checkWhatsNew(){
+    try{
+      const { version } = await window.api.getAppVersion();
+      const { version: lastSeen } = await window.api.getLastSeenVersion();
+      if(lastSeen && lastSeen !== version){
+        const entries = Object.keys(CHANGELOG)
+          .filter(v => compareVersions(v, lastSeen) > 0 && compareVersions(v, version) <= 0)
+          .sort(compareVersions)
+          .map(v => ({ version: v, items: CHANGELOG[v] }));
+        if(entries.length) this.state.whatsNew = { version, entries };
+      }
+      await window.api.setLastSeenVersion(version);
+    } catch(e) { /* non-blocking: worst case, no "what's new" this time */ }
+  },
+  closeWhatsNew(){ this.state.whatsNew = null; this.render(); },
   async lock(){
     this.stopPolling();
     await window.api.lock();
@@ -1610,8 +1659,27 @@ const App = {
       ${this.state.confirm ? this.renderConfirm() : ''}
       ${this.state.conflict ? this.renderConflict() : ''}
       ${this.state.showSettings ? this.renderSettings() : ''}
+      ${this.state.whatsNew ? this.renderWhatsNew() : ''}
       <div id="toast" class="toast ${this.state.toast?'show':''}">${esc(this.state.toast)}</div>
     `;
+  },
+
+  renderWhatsNew(){
+    const w = this.state.whatsNew;
+    return `<div class="modal-back" onclick="if(event.target===this) App.closeWhatsNew()">
+      <div class="modal" style="max-width:460px;">
+        <h3>Quoi de neuf dans Audits PCRH ${esc(w.version)}</h3>
+        ${w.entries.map(e => `
+          <div style="margin-bottom:14px;">
+            ${w.entries.length>1 ? `<div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--ink-3); margin-bottom:5px;">Version ${esc(e.version)}</div>` : ''}
+            <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--ink-2); line-height:1.6;">
+              ${e.items.map(it=>`<li>${esc(it)}</li>`).join('')}
+            </ul>
+          </div>
+        `).join('')}
+        <div class="row" style="margin-top:4px;"><button class="btn primary" onclick="App.closeWhatsNew()">Compris</button></div>
+      </div>
+    </div>`;
   },
 
   trashCount(){ return this.state.missions.filter(m=>m.deletedAt).length; },

@@ -302,6 +302,19 @@ ipcMain.handle('settings:setApiKey', async (evt, key) => {
   return { ok: true };
 });
 
+/* ---------------- "Quoi de neuf" : version vue pour la dernière fois sur ce poste ---------------- */
+ipcMain.handle('app:getVersion', async () => app.getVersion());
+
+ipcMain.handle('settings:getLastSeenVersion', async () => {
+  const s = readSettings();
+  return { version: s.lastSeenVersion || null };
+});
+
+ipcMain.handle('settings:setLastSeenVersion', async (evt, version) => {
+  writeSettings({ lastSeenVersion: String(version || '') });
+  return { ok: true };
+});
+
 const GRAVITE_NC = { mineure: 'Mineure', majeure: 'Majeure', critique: 'Critique' };
 const STATUT_NC = { ouvert: 'Ouvert', en_cours_nc: 'En cours', clos: 'Clos' };
 

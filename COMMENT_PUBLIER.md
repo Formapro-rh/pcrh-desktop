@@ -73,6 +73,14 @@ faudra en générer un nouveau sur
 (scope `public_repo` uniquement) et remplacer la valeur de la variable
 `GH_TOKEN` dans les Variables d'environnement Windows.
 
+### Si la fenêtre "Mise à jour disponible" met du temps à apparaître
+
+C'est normal — le téléchargement de l'installeur (~85 Mo) peut prendre
+plusieurs minutes selon la connexion, et se fait en arrière-plan sans
+rien afficher tant qu'il n'est pas terminé. Inutile de fermer/rouvrir
+l'app en boucle : laissez-la simplement ouverte quelques minutes, la
+fenêtre apparaîtra dès que le téléchargement sera fini.
+
 ## Notes
 
 - Le dossier partagé des audits (`pcrh-data`) n'est jamais touché par une

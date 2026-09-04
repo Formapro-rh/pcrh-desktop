@@ -1407,6 +1407,9 @@ const CHANGELOG = {
   '1.22.0': [
     "Nouveau suivi des documents demandés au client sur chaque audit (À demander / Demandé / Reçu), avec une liste standard de documents RH courants proposée en un clic.",
   ],
+  '1.23.0': [
+    "Les non-conformités générées depuis la grille peuvent désormais être rédigées automatiquement par l'IA (description + action corrective) — avec clé API personnelle, ou gratuitement via claude.ai.",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -1437,7 +1440,7 @@ const App = {
     gridOverrides:null, gridOpenCats:new Set(), gridEditingId:null, confirmRemoveQuestion:null, gridSearch:'',
     logoDataUrl:null, logoBusy:false,
     openRefFor:null,
-    reportGenBusy:false,
+    reportGenBusy:false, ncGenBusy:false,
     whatsNew:null,
   },
 
@@ -1932,6 +1935,72 @@ const App = {
     });
     this.showToast(added>0 ? added+" non-conformité(s) générée(s) depuis la grille" : "Aucun nouvel écart à générer");
     this.render();
+  },
+
+  /** The list of questions notées Non conforme/Partiel that don't already
+   *  have a non-conformité — shared by the AI generation and the free
+   *  claude.ai path, so both act on exactly the same set. */
+  pendingEcarts(){
+    const existingCritIds = new Set(this.state.draft.nonConformites.map(n=>n.critereId).filter(Boolean));
+    const items = [];
+    this.state.draft.grid.forEach(catG=>{
+      const tpl = CATEGORIES_TEMPLATE.find(c=>c.id===catG.catId);
+      catG.criteres.forEach(c=>{
+        if((c.note===0||c.note===1) && !existingCritIds.has(c.id)){
+          const label = c.custom ? c.label : ((CRITERES_INDEX[c.id]||{}).label || c.id);
+          items.push({ critereId:c.id, critereLabel:label, domaine: tpl?tpl.nom:catG.catId, comment:c.comment||'', gravite: c.note===0?'majeure':'mineure' });
+        }
+      });
+    });
+    return items;
+  },
+  /** Same idea as "Générer depuis la grille" but has Claude draft the
+   *  description and the action corrective for each new non-conformité,
+   *  instead of leaving them blank — uses the personal Anthropic API key. */
+  async generateNCWithAI(){
+    const items = this.pendingEcarts();
+    if(items.length===0){ this.showToast("Aucun nouvel écart à générer"); return; }
+    this.state.ncGenBusy = true; this.render();
+    let res;
+    try { res = await window.api.generateNCAI(items); }
+    finally { this.state.ncGenBusy = false; }
+    if(!res.ok){ this.showToast(res.error || "Échec de la génération"); this.render(); return; }
+    const byId = {};
+    (res.ecarts||[]).forEach(e=>{ byId[e.critereId]=e; });
+    items.forEach(item=>{
+      const ai = byId[item.critereId];
+      this.state.draft.nonConformites.push({
+        id: uid('nc'), critereId:item.critereId, critereLabel:item.critereLabel,
+        gravite:item.gravite,
+        description: ai ? ai.description : (item.comment||''),
+        actionCorrective: ai ? ai.actionCorrective : '',
+        responsable:'', echeance:'', statut:'ouvert',
+      });
+    });
+    this.showToast(items.length+" non-conformité(s) rédigée(s) par l'IA");
+    this.render();
+  },
+  /** Free alternative: copies the flagged questions to the clipboard with
+   *  instructions, opens claude.ai — you paste the suggestions back into
+   *  the description/action corrective fields yourself. */
+  async copyNCDataForClaude(){
+    const items = this.pendingEcarts();
+    if(items.length===0){ this.showToast("Aucun nouvel écart à générer"); return; }
+    const lines = [];
+    lines.push("Pour chaque écart ci-dessous, issu d'un audit de conformité RH, rédige en français une description factuelle de la non-conformité et une proposition d'action corrective générique et professionnelle. N'invente aucun fait sur l'entreprise : base-toi uniquement sur la question et le commentaire fournis.");
+    lines.push('');
+    items.forEach((it,i)=>{
+      lines.push(`${i+1}. [${it.gravite==='majeure'?'Majeure':'Mineure'}] Domaine : ${it.domaine} — Question : ${it.critereLabel}${it.comment?(' — Commentaire de l\'auditeur : '+it.comment):''}`);
+    });
+    const text = lines.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      this.showToast('Données copiées — collez-les dans claude.ai');
+    } catch(e) {
+      this.showToast("Impossible de copier automatiquement, réessayez.");
+      return;
+    }
+    if(window.api && window.api.openExternal) window.api.openExternal('https://claude.ai/new');
   },
 
   async saveDraft(close){
@@ -3242,7 +3311,7 @@ const App = {
         ["Domaine non applicable", "Une case « Non applicable » en haut de chaque domaine (ex : BDESE pour une petite structure) l'exclut du score sans effacer les réponses déjà données."],
         ["Question personnalisée", "En bas de chaque domaine, un champ permet d'ajouter une question propre à cet audit précis — elle compte dans le score mais n'apparaît que dans cet audit."],
         ["Pièces jointes", "Sous chaque question, un bouton « Joindre un fichier » permet d'attacher une preuve (photo, scan, document)."],
-        ["Non-conformités & plan d'actions", "« Générer depuis la grille » crée automatiquement un écart pour chaque question notée Non conforme ou Partiel ; « Ajouter » permet d'en saisir une librement."],
+        ["Non-conformités & plan d'actions", "« Générer depuis la grille » crée un écart (vierge) pour chaque question notée Non conforme ou Partiel. « Rédiger avec l'IA » ou « Copier pour claude.ai » font en plus rédiger la description et l'action corrective par Claude. « Ajouter » permet d'en saisir une librement."],
         ["Dupliquer un audit", "Depuis le tableau de bord ou la fiche d'un audit, reprend l'entreprise/service/auditeur/périmètre avec une grille vierge — pratique pour un audit de suivi."],
         ["Documents demandés au client", "Dans le formulaire d'un audit : suivez les documents à obtenir (À demander / Demandé / Reçu), avec une liste standard de documents RH courants en un clic."],
         ["Historique de l'audit", "En bas de la fiche d'un audit : qui a fait quoi et quand (statut, réponses, non-conformités, pièces jointes...)."],
@@ -3452,6 +3521,8 @@ const App = {
           <h2>Non-conformités &amp; plan d'actions</h2>
           <div class="hactions">
             <button class="btn ghost" onclick="App.generateNC()">${icon('wand',15)} Générer depuis la grille</button>
+            <button class="btn ghost" onclick="App.copyNCDataForClaude()">${icon('wand',15)} Copier pour claude.ai (gratuit)</button>
+            <button class="btn ghost" ${this.state.ncGenBusy?'disabled':''} onclick="App.generateNCWithAI()">${icon('wand',15)} ${this.state.ncGenBusy?'Rédaction en cours…':"Rédiger avec l'IA (clé API)"}</button>
             <button class="btn" onclick="App.addNC()">${icon('plus',15)} Ajouter</button>
           </div>
         </div>

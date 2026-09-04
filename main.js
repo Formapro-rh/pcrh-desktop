@@ -584,6 +584,18 @@ const ReportSchema = z.object({
   ),
 });
 
+const NCSuggestionSchema = z.object({
+  ecarts: z.array(z.object({
+    critereId: z.string().describe("Doit reprendre exactement l'identifiant de critère fourni, sans le modifier."),
+    description: z.string().describe(
+      "Description factuelle et professionnelle de la non-conformité constatée, en 1 à 2 phrases, basée uniquement sur la question et le commentaire de l'auditeur fournis. Ne rien inventer sur l'entreprise auditée."
+    ),
+    actionCorrective: z.string().describe(
+      "Proposition d'action corrective générique et pertinente pour ce type d'écart, en 1 à 2 phrases — une recommandation de bonne pratique, pas une affirmation sur ce que l'entreprise a déjà fait ou possède."
+    ),
+  })),
+});
+
 function safeFileName(s) {
   return String(s || '').replace(/[\\/:*?"<>|]/g, '-').trim() || 'audit';
 }
@@ -753,6 +765,41 @@ ipcMain.handle('report:generate', async (evt, { mission, scores }) => {
   } catch (e) {
     const msg = e && e.status === 401 ? "Clé API Anthropic invalide." : (e.message || String(e));
     return { ok: false, error: "Échec de la génération du rapport : " + msg };
+  }
+});
+
+/** Drafts a description + action corrective for a batch of flagged
+ *  questions (notées Non conforme / Partiel, sans non-conformité déjà
+ *  créée) — `items`: [{ critereId, critereLabel, domaine, comment,
+ *  gravite }]. Never touches the mission's data itself; the renderer
+ *  merges the suggestions into new non-conformité entries. */
+ipcMain.handle('nc:generateAI', async (evt, { items }) => {
+  try {
+    requireSession();
+    const s = readSettings();
+    const apiKey = s.anthropicApiKey;
+    if (!apiKey) {
+      return { ok: false, error: "Aucune clé API Anthropic configurée. Renseignez-la dans Paramètres, ou utilisez l'option gratuite (copier pour claude.ai)." };
+    }
+    if (!items || items.length === 0) {
+      return { ok: false, error: "Aucun écart à documenter." };
+    }
+    const client = new Anthropic({ apiKey });
+    const response = await client.messages.parse({
+      model: 'claude-opus-5',
+      max_tokens: 8000,
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'medium', format: zodOutputFormat(NCSuggestionSchema) },
+      system: "Tu es un auditeur RH senior qui rédige, en français, la description et l'action corrective de non-conformités pour un rapport d'audit de conformité RH. Pour chaque écart fourni, rédige une description factuelle et une action corrective générique et professionnelle adaptées au type de non-conformité. N'invente aucun fait sur l'entreprise auditée : base-toi uniquement sur le libellé de la question et le commentaire éventuel de l'auditeur. Reprends exactement le critereId fourni pour chaque écart.",
+      messages: [{ role: 'user', content: 'Écarts à documenter (JSON) :\n' + JSON.stringify(items, null, 2) }],
+    });
+    if (!response.parsed_output) {
+      return { ok: false, error: "Claude n'a pas renvoyé de contenu exploitable. Réessayez." };
+    }
+    return { ok: true, ecarts: response.parsed_output.ecarts };
+  } catch (e) {
+    const msg = e && e.status === 401 ? "Clé API Anthropic invalide." : (e.message || String(e));
+    return { ok: false, error: "Échec de la génération : " + msg };
   }
 });
 

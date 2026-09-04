@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('api', {
   getLastSeenVersion: () => ipcRenderer.invoke('settings:getLastSeenVersion'),
   setLastSeenVersion: (v) => ipcRenderer.invoke('settings:setLastSeenVersion', v),
   generateReport: (payload) => ipcRenderer.invoke('report:generate', payload),
+  generateNCAI: (items) => ipcRenderer.invoke('nc:generateAI', { items }),
   attachReport: (payload) => ipcRenderer.invoke('report:attach', payload),
   addAttachment: (payload) => ipcRenderer.invoke('attachment:add', payload),
   openAttachment: (payload) => ipcRenderer.invoke('attachment:open', payload),

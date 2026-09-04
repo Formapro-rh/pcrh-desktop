@@ -985,6 +985,24 @@ const NOTE_LABELS = { na:"N/A", 0:"Non conforme", 1:"Partiel", 2:"Conforme" };
 const STATUT_MISSION = { brouillon:"Brouillon", en_cours:"En cours", cloture:"Clôturé" };
 const STATUT_NC = { ouvert:"Ouvert", en_cours_nc:"En cours", clos:"Clos" };
 const GRAVITE_NC = { mineure:"Mineure", majeure:"Majeure", critique:"Critique" };
+const STATUT_DOC = { a_demander:"À demander", demande:"Demandé", recu:"Reçu" };
+/** Common documents requested at the start of an HR compliance audit —
+ *  a starting point for "Ajouter la liste standard", not an exhaustive or
+ *  mandatory list. Freely editable/removable per audit afterwards. */
+const DOCUMENTS_STANDARD = [
+  "Registre du personnel",
+  "Document Unique d'Évaluation des Risques Professionnels (DUERP)",
+  "Règlement intérieur",
+  "Contrats de travail (échantillon)",
+  "Bulletins de paie (échantillon)",
+  "Convention collective applicable",
+  "Accords d'entreprise",
+  "Procès-verbaux des réunions du CSE",
+  "Organigramme",
+  "BDESE",
+  "Registre des accidents du travail bénins",
+  "Affichages obligatoires (preuves photo)",
+];
 
 function icon(name, size){
   size = size || 16;
@@ -1065,6 +1083,7 @@ function newMissionDraft(){
       catId: cat.id, criteres: cat.criteres.map(c=>({ id:c.id, note:null, comment:'' }))
     })),
     nonConformites: [],
+    documents: [],
     historique: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -1133,6 +1152,20 @@ function summarizeMissionChanges(oldMission, newMission){
   });
   if(sdNaAdded) parts.push(`${sdNaAdded} sous-domaine${sdNaAdded>1?'s':''} marqué${sdNaAdded>1?'s':''} non applicable`);
   if(sdNaRemoved) parts.push(`${sdNaRemoved} sous-domaine${sdNaRemoved>1?'s':''} redevenu${sdNaRemoved>1?'s':''} applicable`);
+
+  const oldDocById = {};
+  (oldMission.documents||[]).forEach(d=>{ oldDocById[d.id]=d; });
+  const newDocIds = new Set((newMission.documents||[]).map(d=>d.id));
+  let docAdded=0, docReceived=0, docRemoved=0;
+  (newMission.documents||[]).forEach(d=>{
+    const o = oldDocById[d.id];
+    if(!o){ docAdded++; return; }
+    if(o.statut!=='recu' && d.statut==='recu') docReceived++;
+  });
+  (oldMission.documents||[]).forEach(d=>{ if(!newDocIds.has(d.id)) docRemoved++; });
+  if(docAdded) parts.push(`${docAdded} document${docAdded>1?'s':''} ajouté${docAdded>1?'s':''} à la check-list`);
+  if(docReceived) parts.push(`${docReceived} document${docReceived>1?'s':''} marqué${docReceived>1?'s':''} reçu${docReceived>1?'s':''}`);
+  if(docRemoved) parts.push(`${docRemoved} document${docRemoved>1?'s':''} retiré${docRemoved>1?'s':''} de la check-list`);
 
   const oldNcById = {};
   (oldMission.nonConformites||[]).forEach(n=>{ oldNcById[n.id]=n; });
@@ -1370,6 +1403,9 @@ const CHANGELOG = {
   ],
   '1.21.0': [
     "Un sous-domaine peut désormais être marqué « Non applicable » pour un audit donné (en plus du domaine entier) — exclu du score sans perdre les réponses déjà saisies, réversible à tout moment.",
+  ],
+  '1.22.0': [
+    "Nouveau suivi des documents demandés au client sur chaque audit (À demander / Demandé / Reçu), avec une liste standard de documents RH courants proposée en un clic.",
   ],
 };
 
@@ -1829,6 +1865,36 @@ const App = {
   toggleCat(catId){
     if(this.state.openCats.has(catId)) this.state.openCats.delete(catId); else this.state.openCats.add(catId);
     this.render();
+  },
+
+  /* ---- check-list documentaire ---- */
+  addDocument(nom){
+    this.state.draft.documents = this.state.draft.documents || [];
+    this.state.draft.documents.push({ id: uid('doc'), nom: (nom||'').trim() || 'Nouveau document', statut:'a_demander', dateReception:'', commentaire:'' });
+    this.render();
+  },
+  /** Appends the standard checklist, skipping any name already present
+   *  (case-insensitive) so clicking it twice doesn't duplicate entries. */
+  addStandardDocuments(){
+    this.state.draft.documents = this.state.draft.documents || [];
+    const existing = new Set(this.state.draft.documents.map(d=>d.nom.trim().toLowerCase()));
+    let added = 0;
+    DOCUMENTS_STANDARD.forEach(nom=>{
+      if(existing.has(nom.toLowerCase())) return;
+      this.state.draft.documents.push({ id: uid('doc'), nom, statut:'a_demander', dateReception:'', commentaire:'' });
+      added++;
+    });
+    this.showToast(added>0 ? `${added} document(s) ajouté(s)` : 'Ces documents figurent déjà dans la liste');
+    this.render();
+  },
+  removeDocument(id){
+    this.state.draft.documents = this.state.draft.documents.filter(d=>d.id!==id);
+    this.render();
+  },
+  updateDocument(id, field, value, rerender){
+    const doc = this.state.draft.documents.find(d=>d.id===id);
+    if(doc) doc[field]=value;
+    if(rerender) this.render();
   },
 
   addNC(prefill){
@@ -3178,6 +3244,7 @@ const App = {
         ["Pièces jointes", "Sous chaque question, un bouton « Joindre un fichier » permet d'attacher une preuve (photo, scan, document)."],
         ["Non-conformités & plan d'actions", "« Générer depuis la grille » crée automatiquement un écart pour chaque question notée Non conforme ou Partiel ; « Ajouter » permet d'en saisir une librement."],
         ["Dupliquer un audit", "Depuis le tableau de bord ou la fiche d'un audit, reprend l'entreprise/service/auditeur/périmètre avec une grille vierge — pratique pour un audit de suivi."],
+        ["Documents demandés au client", "Dans le formulaire d'un audit : suivez les documents à obtenir (À demander / Demandé / Reçu), avec une liste standard de documents RH courants en un clic."],
         ["Historique de l'audit", "En bas de la fiche d'un audit : qui a fait quoi et quand (statut, réponses, non-conformités, pièces jointes...)."],
       ])}
 
@@ -3257,6 +3324,37 @@ const App = {
           <div class="form-grid wide" style="margin-top:14px;">
             <div class="field"><label>Périmètre de l'audit</label><textarea placeholder="Objet et périmètre de l'audit de conformité RH…" oninput="App.updateDraftField('perimetre', this.value)">${esc(d.perimetre)}</textarea></div>
           </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Documents demandés au client</h2>
+          <div class="hactions">
+            <button class="btn ghost" onclick="App.addStandardDocuments()">${icon('wand',15)} Liste standard</button>
+            <button class="btn" onclick="App.addDocument()">${icon('plus',15)} Ajouter</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          ${(d.documents||[]).length===0 ? `<div class="divider-note">Aucun document suivi pour l'instant. « Liste standard » propose les documents habituellement demandés pour un audit RH.</div>` : `
+          <div class="table-wrap"><table>
+            <thead><tr><th>Document</th><th>Statut</th><th>Date de réception</th><th>Commentaire</th><th></th></tr></thead>
+            <tbody>
+              ${d.documents.map(doc=>`<tr>
+                <td><input type="text" class="crit-comment" value="${esc(doc.nom)}" oninput="App.updateDocument('${doc.id}','nom', this.value)"/></td>
+                <td>
+                  <select onchange="App.updateDocument('${doc.id}','statut', this.value, true)">
+                    <option value="a_demander" ${doc.statut==='a_demander'?'selected':''}>À demander</option>
+                    <option value="demande" ${doc.statut==='demande'?'selected':''}>Demandé</option>
+                    <option value="recu" ${doc.statut==='recu'?'selected':''}>Reçu</option>
+                  </select>
+                </td>
+                <td><input type="date" value="${esc(doc.dateReception)}" oninput="App.updateDocument('${doc.id}','dateReception', this.value)"/></td>
+                <td><input type="text" class="crit-comment" placeholder="Optionnel" value="${esc(doc.commentaire)}" oninput="App.updateDocument('${doc.id}','commentaire', this.value)"/></td>
+                <td><button class="btn ghost" title="Retirer" onclick="App.removeDocument('${doc.id}')">${icon('x',14)}</button></td>
+              </tr>`).join('')}
+            </tbody>
+          </table></div>`}
         </div>
       </div>
 
@@ -3445,6 +3543,22 @@ const App = {
           </div>
         </div>
       </div>
+
+      ${(m.documents||[]).length>0 ? `
+      <div class="panel no-print">
+        <div class="panel-head"><h2>Documents demandés au client</h2></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Document</th><th>Statut</th><th>Date de réception</th><th>Commentaire</th></tr></thead>
+          <tbody>
+            ${m.documents.map(doc=>`<tr>
+              <td>${esc(doc.nom)}</td>
+              <td><span class="badge ${doc.statut==='recu'?'clos':doc.statut==='demande'?'en_cours_nc':'ouvert'}"><span class="bdot"></span>${STATUT_DOC[doc.statut]||doc.statut}</span></td>
+              <td class="tnum">${doc.dateReception?formatDate(doc.dateReception):'—'}</td>
+              <td>${esc(doc.commentaire)||'—'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table></div>
+      </div>` : ''}
 
       <div class="panel no-print">
         <div class="panel-head"><h2>Rapport final</h2></div>

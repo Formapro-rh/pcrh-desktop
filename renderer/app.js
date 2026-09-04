@@ -1008,6 +1008,7 @@ function icon(name, size){
     building:`<rect x="4" y="3" width="16" height="18" rx="1" ${p}/><line x1="9" y1="7" x2="9" y2="7.01" ${p}/><line x1="15" y1="7" x2="15" y2="7.01" ${p}/><line x1="9" y1="11" x2="9" y2="11.01" ${p}/><line x1="15" y1="11" x2="15" y2="11.01" ${p}/><line x1="9" y1="15" x2="9" y2="15.01" ${p}/><line x1="15" y1="15" x2="15" y2="15.01" ${p}/><line x1="10" y1="21" x2="10" y2="18" ${p}/><line x1="14" y1="21" x2="14" y2="18" ${p}/>`,
     copy:`<rect x="9" y="9" width="12" height="12" rx="1.5" ${p}/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" ${p}/>`,
     paperclip:`<path d="M21.4 11.05 12.2 20.2a5 5 0 0 1-7.07-7.07l9.2-9.2a3.5 3.5 0 0 1 4.94 4.95l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.48-8.48" ${p}/>`,
+    help:`<circle cx="12" cy="12" r="10" ${p}/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" ${p}/><line x1="12" y1="17" x2="12.01" y2="17" ${p}/>`,
   };
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24">${paths[name]||''}</svg>`;
 }
@@ -1322,6 +1323,9 @@ const CHANGELOG = {
     "Barre de recherche dans « Gérer la grille des questions », pour retrouver une question sans ouvrir chaque domaine un par un.",
     "Export complet de l'espace en .zip (Paramètres) : audits, grille personnalisée, pièces jointes et rapports en une seule archive.",
   ],
+  '1.17.0': [
+    "Nouveau guide d'utilisation intégré (Paramètres → Consulter le guide d'utilisation), qui résume toutes les fonctionnalités de l'application.",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -1440,6 +1444,12 @@ const App = {
     this.state.gridEditingId = null;
     this.state.gridSearch = '';
     this.state.view = 'grid';
+    window.scrollTo(0,0);
+    this.render();
+  },
+  openHelp(){
+    this.state.showSettings = false;
+    this.state.view = 'help';
     window.scrollTo(0,0);
     this.render();
   },
@@ -2208,6 +2218,7 @@ const App = {
             this.state.view==='clients' ? this.renderClients() :
             this.state.view==='client' ? this.renderClientDetail() :
             this.state.view==='grid' ? this.renderGridEditor() :
+            this.state.view==='help' ? this.renderHelp() :
             this.state.view==='trash' ? this.renderTrash() : ''}
         </div>
       </div>
@@ -2362,6 +2373,10 @@ const App = {
             <button class="btn primary" ${f.apiKeyBusy?'disabled':''} onclick="App.saveApiKey()">${f.apiKeyBusy?'Enregistrement…':'Enregistrer la clé'}</button>
             ${f.apiKeySaved ? `<span style="color:var(--good); font-size:12.5px;">✓ Enregistrée</span>` : ''}
           </div>
+        </div>
+
+        <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--border);">
+          <button class="btn ghost" onclick="App.openHelp()">${icon('help',15)} Consulter le guide d'utilisation</button>
         </div>
 
         <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--border);">
@@ -2907,6 +2922,82 @@ const App = {
       </div>
       <button class="btn ghost" title="Retirer cette question" onclick="App.requestRemoveGridQuestion('${crit.id}')">${icon('trash',14)}</button>
     </div>`;
+  },
+
+  /* ---------- Guide d'utilisation ---------- */
+  renderHelp(){
+    const section = (titre, items) => `
+      <div class="panel">
+        <div class="panel-head"><h2>${esc(titre)}</h2></div>
+        <div class="panel-body">
+          ${items.map(it=>`
+            <div style="margin-bottom:14px;">
+              <div style="font-weight:600; font-size:13px; margin-bottom:3px;">${esc(it[0])}</div>
+              <div style="font-size:13px; color:var(--ink-2); line-height:1.55;">${it[1]}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+    return `
+      <div class="pagehead">
+        <div class="hactions" style="margin-bottom:8px;">
+          <button class="btn ghost" onclick="App.setView('dashboard')">${icon('back',15)} Retour</button>
+        </div>
+        <div>
+          <h1>Guide d'utilisation</h1>
+          <div class="lede">Un aperçu de ce que fait l'application, section par section.</div>
+        </div>
+      </div>
+
+      ${section('Prise en main', [
+        ["Se connecter", "L'identifiant et le code d'accès sont partagés par toute l'équipe pour un même dossier. Un seul espace suffit en général : rejoignez-le plutôt que d'en créer un nouveau."],
+        ["Tableau de bord", "Vue d'ensemble : missions auditées, score moyen, non-conformités ouvertes, graphiques de score par domaine et par non-conformités, tableau des missions (triable en cliquant sur un en-tête de colonne, cherchable via la barre de recherche)."],
+      ])}
+
+      ${section('Réaliser un audit', [
+        ["Nouvel audit", "Renseignez l'entreprise, le service audité, l'auditeur, les dates, puis notez chaque question : N/A, Non conforme, Partiel ou Conforme, avec un commentaire optionnel."],
+        ["Domaine non applicable", "Une case « Non applicable » en haut de chaque domaine (ex : BDESE pour une petite structure) l'exclut du score sans effacer les réponses déjà données."],
+        ["Question personnalisée", "En bas de chaque domaine, un champ permet d'ajouter une question propre à cet audit précis — elle compte dans le score mais n'apparaît que dans cet audit."],
+        ["Pièces jointes", "Sous chaque question, un bouton « Joindre un fichier » permet d'attacher une preuve (photo, scan, document)."],
+        ["Non-conformités & plan d'actions", "« Générer depuis la grille » crée automatiquement un écart pour chaque question notée Non conforme ou Partiel ; « Ajouter » permet d'en saisir une librement."],
+        ["Dupliquer un audit", "Depuis le tableau de bord ou la fiche d'un audit, reprend l'entreprise/service/auditeur/périmètre avec une grille vierge — pratique pour un audit de suivi."],
+        ["Historique de l'audit", "En bas de la fiche d'un audit : qui a fait quoi et quand (statut, réponses, non-conformités, pièces jointes...)."],
+      ])}
+
+      ${section('Rapports et exports', [
+        ["Export PDF / Impression", "Depuis la fiche d'un audit ou d'un client : bouton « Exporter en PDF » ou « Imprimer »."],
+        ["Export Excel", "Depuis le tableau de bord : exporte tous les audits et toutes les non-conformités dans un classeur Excel."],
+        ["Rapport rédigé par IA", "Deux options sur la fiche d'un audit : « Générer le rapport (IA — clé API) » utilise votre clé API Anthropic personnelle (payante, à renseigner dans Paramètres) ; « Copier pour claude.ai (gratuit) » copie les données de l'audit et ouvre claude.ai pour générer le rapport gratuitement."],
+        ["Joindre le rapport final", "Une fois le rapport rédigé (Word ou PDF), joignez-le à l'audit correspondant depuis sa fiche — il sera rangé dans le dossier partagé."],
+      ])}
+
+      ${section('Clients', [
+        ["Fiche client", "La section « Clients » regroupe tous les audits d'une même entreprise : score moyen, dernier score, non-conformités ouvertes, prochain audit prévu, évolution dans le temps."],
+        ["Comparer deux audits", "Sur la fiche d'un client ayant au moins 2 audits : choisissez deux audits à comparer pour voir l'évolution du score par domaine et les non-conformités résolues, nouvelles ou toujours ouvertes."],
+        ["Prochain audit prévu", "Un champ dans le formulaire d'un audit ; un rappel visuel (orange puis rouge ⚠) apparaît sur la liste des clients à l'approche ou au dépassement de l'échéance."],
+      ])}
+
+      ${section('Corbeille', [
+        ["Mettre à la corbeille", "Un audit supprimé passe d'abord par la Corbeille (menu latéral) — il reste restaurable tant qu'il n'est pas supprimé définitivement."],
+        ["Suppression définitive", "Depuis la Corbeille uniquement, et irréversible : la grille, les commentaires et les pièces jointes de l'audit sont perdus."],
+      ])}
+
+      ${section('Paramètres', [
+        ["Changer le code d'accès", "Renouvelle l'identifiant/code partagés par l'équipe pour cet espace."],
+        ["Gérer la grille des questions", "Modifier le texte d'une question, ses liens de référence légale, ou ajouter/retirer une question — avec une barre de recherche pour la retrouver rapidement. S'applique aux nouveaux audits ; un audit déjà créé garde sa grille telle quelle."],
+        ["Sauvegardes automatiques", "Une copie de sécurité du fichier d'audits est conservée chaque jour pendant 30 jours, sans action de votre part."],
+        ["Export complet de l'espace", "Un bouton « Exporter en .zip » regroupe audits, grille personnalisée, pièces jointes et rapports en une archive — utile avant un changement important ou pour une copie externe."],
+        ["Créer un nouvel espace", "Pour démarrer un espace totalement séparé (autre dossier, autre identifiant/code) — vous basculez automatiquement dessus après création."],
+        ["Votre nom", "Sert uniquement à l'historique des modifications de chaque audit (qui a fait quoi), propre à cet ordinateur."],
+      ])}
+
+      ${section('Mises à jour et sécurité', [
+        ["Mise à jour automatique", "L'application vérifie et installe les nouvelles versions toute seule ; un écran « Quoi de neuf » résume les changements après chaque mise à jour."],
+        ["Chiffrement des données", "Le fichier d'audits est chiffré avec une clé dérivée du code d'accès de l'espace — illisible sans lui, y compris en l'ouvrant directement depuis le dossier partagé."],
+        ["Alerte de retard", "Une notification de bureau apparaît à l'ouverture de l'application s'il existe des non-conformités dont l'échéance est dépassée."],
+      ])}
+    `;
   },
 
   /* ---------- Form ---------- */

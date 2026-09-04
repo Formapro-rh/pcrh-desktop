@@ -1326,6 +1326,9 @@ const CHANGELOG = {
   '1.17.0': [
     "Nouveau guide d'utilisation intégré (Paramètres → Consulter le guide d'utilisation), qui résume toutes les fonctionnalités de l'application.",
   ],
+  '1.17.1': [
+    "Le guide d'utilisation est désormais accessible directement depuis le tableau de bord (bouton « Guide »), en plus de Paramètres.",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -2446,6 +2449,7 @@ const App = {
           <div class="lede">Suivi des audits de conformité RH réalisés au sein de l'entreprise.</div>
         </div>
         <div class="hactions">
+          <button class="btn ghost" onclick="App.openHelp()" title="Guide d'utilisation">${icon('help',15)} Guide</button>
           <button class="btn" onclick="App.exportXlsx()">${icon('download',15)} Exporter (Excel)</button>
           <button class="btn primary" onclick="App.newMission()">${icon('plus',15)} Nouvel audit</button>
         </div>

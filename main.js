@@ -12,6 +12,7 @@ const {
 } = require('docx');
 const XLSX = require('xlsx');
 const { autoUpdater } = require('electron-updater');
+const archiver = require('archiver');
 
 const CONFIG_FILE = 'espace.json';
 const DATA_FILE = 'audits.json';
@@ -305,6 +306,51 @@ ipcMain.handle('space:openBackups', async () => {
     return err ? { ok: false, error: err } : { ok: true };
   } catch (e) {
     return { ok: false, error: e.code === 'not_unlocked' ? 'Session verrouillée.' : e.message };
+  }
+});
+
+/** Manual, on-demand full export of everything in this espace's shared
+ *  folder — audits.json (still encrypted, as on disk), the grid
+ *  customization, attachments and final reports — as a single .zip the
+ *  user chooses where to save. A complement to the automatic rolling
+ *  backups, e.g. before a risky change or to keep an external copy. */
+ipcMain.handle('space:exportAll', async () => {
+  try {
+    requireSession();
+    const defaultName = `Sauvegarde - ${safeFileName(session.identifiant)} - ${new Date().toISOString().slice(0,10)}.zip`;
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: "Exporter tout l'espace",
+      defaultPath: path.join(app.getPath('documents'), defaultName),
+      filters: [{ name: 'Archive ZIP', extensions: ['zip'] }],
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+
+    const folder = session.folder;
+    await new Promise((resolve, reject) => {
+      const output = fs.createWriteStream(result.filePath);
+      const archive = archiver('zip', { zlib: { level: 9 } });
+      output.on('close', resolve);
+      output.on('error', reject);
+      archive.on('error', reject);
+      archive.pipe(output);
+
+      const addIfExists = (rel) => {
+        const p = path.join(folder, rel);
+        if (!fs.existsSync(p)) return;
+        if (fs.statSync(p).isDirectory()) archive.directory(p, rel);
+        else archive.file(p, { name: rel });
+      };
+      addIfExists(DATA_FILE);
+      addIfExists(CONFIG_FILE);
+      addIfExists(GRID_OVERRIDES_FILE);
+      addIfExists('pieces-jointes');
+      addIfExists('rapports');
+
+      archive.finalize();
+    });
+    return { ok: true, path: result.filePath };
+  } catch (e) {
+    return { ok: false, error: e.code === 'not_unlocked' ? 'Session verrouillée.' : "Échec de l'export : " + e.message };
   }
 });
 

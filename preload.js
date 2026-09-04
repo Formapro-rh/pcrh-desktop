@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('api', {
   lock: () => ipcRenderer.invoke('space:lock'),
   revealDataFile: () => ipcRenderer.invoke('space:reveal'),
   openBackupsFolder: () => ipcRenderer.invoke('space:openBackups'),
+  exportAllSpace: () => ipcRenderer.invoke('space:exportAll'),
   listMissions: () => ipcRenderer.invoke('data:list'),
   saveMission: (payload) => ipcRenderer.invoke('data:save', payload),
   deleteMission: (id) => ipcRenderer.invoke('data:delete', id),

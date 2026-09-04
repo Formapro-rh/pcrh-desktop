@@ -1318,6 +1318,10 @@ const CHANGELOG = {
   '1.15.0': [
     "Nouvelle page « Gérer la grille des questions » (Paramètres) : modifier le texte d'une question, ses liens de référence légale, ou ajouter/retirer une question — sans passer par une mise à jour de l'application.",
   ],
+  '1.16.0': [
+    "Barre de recherche dans « Gérer la grille des questions », pour retrouver une question sans ouvrir chaque domaine un par un.",
+    "Export complet de l'espace en .zip (Paramètres) : audits, grille personnalisée, pièces jointes et rapports en une seule archive.",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -1344,7 +1348,7 @@ const App = {
     showSettings:false, settingsForm:null,
     showCreateSpace:false, newSpaceForm:null,
     compareA:null, compareB:null,
-    gridOverrides:null, gridOpenCats:new Set(), gridEditingId:null, confirmRemoveQuestion:null,
+    gridOverrides:null, gridOpenCats:new Set(), gridEditingId:null, confirmRemoveQuestion:null, gridSearch:'',
     openRefFor:null,
     reportGenBusy:false,
     whatsNew:null,
@@ -1434,6 +1438,7 @@ const App = {
     this.state.showSettings = false;
     this.state.gridOpenCats = new Set();
     this.state.gridEditingId = null;
+    this.state.gridSearch = '';
     this.state.view = 'grid';
     window.scrollTo(0,0);
     this.render();
@@ -1442,6 +1447,7 @@ const App = {
     if(this.state.gridOpenCats.has(catId)) this.state.gridOpenCats.delete(catId); else this.state.gridOpenCats.add(catId);
     this.render();
   },
+  setGridSearch(q){ this.state.gridSearch = q; this.render(); },
   isAddedQuestion(critId){
     return this.state.gridOverrides.addedQuestions.some(q=>q.id===critId);
   },
@@ -1986,6 +1992,12 @@ const App = {
   },
   async revealFolder(){ await window.api.revealDataFile(); },
   async revealBackups(){ await window.api.openBackupsFolder(); },
+  async exportAllSpace(){
+    this.showToast("Préparation de l'export…");
+    const res = await window.api.exportAllSpace();
+    if(res.canceled) return;
+    this.showToast(res.ok ? 'Export enregistré : '+res.path : (res.error||"Échec de l'export"));
+  },
 
   /* ---- create an additional espace, from Settings only (never on the
    *  public login screen) — keeps that ability in the hands of whoever
@@ -2320,6 +2332,8 @@ const App = {
         <div class="field-hint" style="margin:-4px 0 0;">Le fichier d'audits est chiffré avec une clé dérivée de votre code d'accès : illisible sans lui, y compris en l'ouvrant directement depuis le dossier partagé.</div>
         <div class="settings-row"><div class="k">Sauvegardes automatiques</div><button class="btn ghost" onclick="App.revealBackups()">Ouvrir le dossier</button></div>
         <div class="field-hint" style="margin:-4px 0 0;">Une copie de sécurité est conservée automatiquement avant chaque modification (30 derniers jours), au cas où un audit serait perdu ou corrompu.</div>
+        <div class="settings-row"><div class="k">Export complet de l'espace</div><button class="btn ghost" onclick="App.exportAllSpace()">${icon('download',15)} Exporter en .zip</button></div>
+        <div class="field-hint" style="margin:-4px 0 0;">Audits, grille personnalisée, pièces jointes et rapports en une seule archive — pour garder une copie externe, ou avant un changement important.</div>
 
         <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--border);">
           <div class="login-field"><label>Votre nom</label><input type="text" value="${esc(Store.editorName())}" placeholder="ex : Marie Dupont" oninput="Store.setEditorName(this.value)"/></div>
@@ -2814,6 +2828,8 @@ const App = {
 
   /* ---------- Grid editor ("Gérer la grille") ---------- */
   renderGridEditor(){
+    const q = this.state.gridSearch.trim().toLowerCase();
+    const searching = q.length>0;
     return `
       <div class="pagehead">
         <div class="hactions" style="margin-bottom:8px;">
@@ -2825,27 +2841,38 @@ const App = {
         </div>
       </div>
 
+      <div class="filters" style="margin-bottom:16px;">
+        <input type="text" style="min-width:280px;" placeholder="Rechercher une question…" value="${esc(this.state.gridSearch)}" oninput="App.setGridSearch(this.value)" id="grid-search"/>
+      </div>
+
       <div class="panel">
         ${CATEGORIES_TEMPLATE.map(cat=>{
-          const open = this.state.gridOpenCats.has(cat.id);
+          const groups = sousDomaineGroups(cat)
+            .map(group=>({ ...group, criteres: searching ? group.criteres.filter(c=>c.label.toLowerCase().includes(q)) : group.criteres }))
+            .filter(group=>group.criteres.length>0);
+          if(searching && groups.length===0) return '';
+          const open = searching ? true : this.state.gridOpenCats.has(cat.id);
+          const matchCount = searching ? groups.reduce((a,g)=>a+g.criteres.length,0) : cat.criteres.length;
           return `<div class="cat-block">
-            <div class="cat-head ${open?'open':''}" onclick="App.toggleGridCat('${cat.id}')">
-              <div class="left">${icon('chev',15)}<h3>${esc(cat.nom)}</h3><span class="n">${cat.criteres.length} question${cat.criteres.length>1?'s':''}</span></div>
+            <div class="cat-head ${open?'open':''}" onclick="${searching?'':`App.toggleGridCat('${cat.id}')`}" style="${searching?'cursor:default;':''}">
+              <div class="left">${icon('chev',15)}<h3>${esc(cat.nom)}</h3><span class="n">${matchCount} question${matchCount>1?'s':''}</span></div>
             </div>
             ${open ? `<div class="cat-body">
-              ${sousDomaineGroups(cat).map(group=>`
+              ${groups.map(group=>`
                 ${group.nom ? `<div class="sd-head">${esc(group.nom)}</div>` : ''}
                 ${group.criteres.map(crit=>this.renderGridQuestionRow(crit)).join('')}
+                ${searching ? '' : `
                 <div class="crit-row" style="align-items:center;">
                   <div class="crit-main">
                     <input type="text" class="crit-comment" id="newgq-${cat.id}-${group.sd||'none'}" placeholder="Ajouter une question dans ${esc(group.nom||cat.nom)}…" onkeydown="if(event.key==='Enter'){ App.addGridQuestion('${cat.id}', ${group.sd?`'${group.sd}'`:'null'}, this.value); this.value=''; }"/>
                   </div>
                   <button class="btn ghost" onclick="const el=document.getElementById('newgq-${cat.id}-${group.sd||'none'}'); App.addGridQuestion('${cat.id}', ${group.sd?`'${group.sd}'`:'null'}, el.value); el.value='';">${icon('plus',15)} Ajouter</button>
-                </div>
+                </div>`}
               `).join('')}
             </div>` : ''}
           </div>`;
         }).join('')}
+        ${searching && CATEGORIES_TEMPLATE.every(cat=>sousDomaineGroups(cat).every(g=>!g.criteres.some(c=>c.label.toLowerCase().includes(q)))) ? `<div class="empty-state"><h3>Aucun résultat</h3><p>Aucune question ne correspond à « ${esc(this.state.gridSearch)} ».</p></div>` : ''}
       </div>
     `;
   },

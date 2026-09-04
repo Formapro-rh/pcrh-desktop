@@ -942,6 +942,7 @@ function icon(name, size){
     scale:`<path d="M12 3v18M6 7h12M6 7l-3.5 7a3.5 3.5 0 0 0 7 0L6 7ZM18 7l-3.5 7a3.5 3.5 0 0 0 7 0L18 7Z" ${p}/><path d="M9 21h6" ${p}/>`,
     download:`<path d="M12 3v12" ${p}/><polyline points="7 10 12 15 17 10" ${p}/><path d="M5 21h14" ${p}/>`,
     building:`<rect x="4" y="3" width="16" height="18" rx="1" ${p}/><line x1="9" y1="7" x2="9" y2="7.01" ${p}/><line x1="15" y1="7" x2="15" y2="7.01" ${p}/><line x1="9" y1="11" x2="9" y2="11.01" ${p}/><line x1="15" y1="11" x2="15" y2="11.01" ${p}/><line x1="9" y1="15" x2="9" y2="15.01" ${p}/><line x1="15" y1="15" x2="15" y2="15.01" ${p}/><line x1="10" y1="21" x2="10" y2="18" ${p}/><line x1="14" y1="21" x2="14" y2="18" ${p}/>`,
+    copy:`<rect x="9" y="9" width="12" height="12" rx="1.5" ${p}/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" ${p}/>`,
   };
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24">${paths[name]||''}</svg>`;
 }
@@ -1168,6 +1169,9 @@ const CHANGELOG = {
   '1.7.0': [
     "Le tableau des missions se trie désormais en cliquant sur l'en-tête d'une colonne (référence, entreprise, date, score, non-conformités...).",
   ],
+  '1.8.0': [
+    "Bouton « Dupliquer » sur un audit : reprend l'entreprise, le service audité, l'auditeur et le périmètre, avec une grille vierge — pratique pour un audit de suivi chez un client déjà audité.",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -1318,6 +1322,36 @@ const App = {
     this.state.draft = cloneMission(m);
     this.state.openCats = new Set(CATEGORIES_TEMPLATE.map(c=>c.id));
     this.state.view='form'; window.scrollTo(0,0); this.render();
+  },
+  /** Opens a new, unsaved draft pre-filled from an existing audit's identity
+   *  (entreprise, service audité, auditeur, périmètre) — grid, notes,
+   *  non-conformités, statut, dates and rapport joint are all reset, so you
+   *  don't retype everything for a follow-up audit at the same client. The
+   *  duplicate is only created once the user saves it, same as newMission(). */
+  duplicateMission(id, evt){
+    if(evt) evt.stopPropagation();
+    const orig = this.state.missions.find(x=>x.id===id);
+    if(!orig) return;
+    const copy = cloneMission(orig);
+    copy.id = uid('aud');
+    copy.reference = genReference();
+    copy.statut = 'brouillon';
+    copy.dateMission = todayISO();
+    copy.dateAudit = todayISO();
+    // Rebuild against the CURRENT grid template, in case it changed since the original audit.
+    copy.grid = CATEGORIES_TEMPLATE.map(cat=>({
+      catId: cat.id, criteres: cat.criteres.map(c=>({ id:c.id, note:null, comment:'' }))
+    }));
+    copy.nonConformites = [];
+    copy.historique = [{ at:new Date().toISOString(), auteur:Store.editorName(), resume:`Dupliqué depuis l'audit ${orig.reference}.` }];
+    delete copy.rapportFichier; delete copy.rapportAt; delete copy.deletedAt;
+    copy.createdAt = new Date().toISOString();
+    copy.updatedAt = new Date().toISOString();
+    this.state.draft = copy;
+    this.state.openCats = new Set(CATEGORIES_TEMPLATE.map(c=>c.id));
+    this.state.view = 'form';
+    window.scrollTo(0,0);
+    this.render();
   },
   viewReport(id){ this.state.reportId=id; this.state.view='report'; window.scrollTo(0,0); this.render(); },
   viewClient(name){ this.state.clientName=name; this.state.view='client'; window.scrollTo(0,0); this.render(); },
@@ -2025,6 +2059,7 @@ const App = {
                 <td class="tnum">${nc>0?`<span class="badge ouvert" title="${overdue>0?overdue+' en retard':''}"><span class="bdot"></span>${nc}${overdue>0?' ⚠':''}</span>`:'<span style="color:var(--ink-3)">0</span>'}</td>
                 <td onclick="event.stopPropagation()">
                   <button class="btn ghost" title="Modifier" onclick="App.editMission('${m.id}')">${icon('pencil',15)}</button>
+                  <button class="btn ghost" title="Dupliquer" onclick="App.duplicateMission('${m.id}', event)">${icon('copy',15)}</button>
                 </td>
               </tr>`;
             }).join('')}
@@ -2408,6 +2443,7 @@ const App = {
         </div>
         <div class="hactions" style="margin-left:auto;">
           <button class="btn" onclick="App.editMission('${m.id}')">${icon('pencil',15)} Modifier</button>
+          <button class="btn" onclick="App.duplicateMission('${m.id}')">${icon('copy',15)} Dupliquer</button>
           <button class="btn" onclick="App.copyAuditDataForClaude('${m.id}')">${icon('wand',15)} Copier pour claude.ai (gratuit)</button>
           <button class="btn" ${this.state.reportGenBusy?'disabled':''} onclick="App.generateAiReport('${m.id}')">${icon('wand',15)} ${this.state.reportGenBusy?'Génération en cours…':'Générer le rapport (IA — clé API)'}</button>
           <button class="btn ghost" onclick="window.print()">${icon('printer',15)} Imprimer</button>

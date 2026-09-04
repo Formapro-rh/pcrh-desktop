@@ -744,14 +744,16 @@ ipcMain.handle('report:exportPdf', async (evt, { reference }) => {
   }
 });
 
-ipcMain.handle('export:xlsx', async (evt, { audits, nonConformites }) => {
+ipcMain.handle('export:xlsx', async (evt, { sheets }) => {
   try {
     requireSession();
     const wb = XLSX.utils.book_new();
-    const wsAudits = XLSX.utils.json_to_sheet(audits || []);
-    XLSX.utils.book_append_sheet(wb, wsAudits, 'Audits');
-    const wsNC = XLSX.utils.json_to_sheet(nonConformites || []);
-    XLSX.utils.book_append_sheet(wb, wsNC, 'Non-conformités');
+    (sheets || []).forEach(s => {
+      const ws = XLSX.utils.json_to_sheet(s.rows || []);
+      // Excel sheet names: 31 chars max, no : \ / ? * [ ]
+      const name = String(s.name || 'Feuille').replace(/[:\\/?*[\]]/g, '-').slice(0, 31);
+      XLSX.utils.book_append_sheet(wb, ws, name);
+    });
     const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
     const defaultName = `Export audits - ${new Date().toISOString().slice(0, 10)}.xlsx`;

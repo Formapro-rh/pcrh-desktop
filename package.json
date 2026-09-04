@@ -1,6 +1,6 @@
 {
   "name": "audits-pcrh",
-  "version": "1.17.1",
+  "version": "1.18.0",
   "description": "Application de bureau pour la gestion des audits de conformité RH (PCRH)",
   "main": "main.js",
   "author": "Alfred Gory",

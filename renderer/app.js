@@ -1329,6 +1329,9 @@ const CHANGELOG = {
   '1.17.1': [
     "Le guide d'utilisation est désormais accessible directement depuis le tableau de bord (bouton « Guide »), en plus de Paramètres.",
   ],
+  '1.18.0': [
+    "L'export Excel contient désormais le détail de chaque question de chaque audit, ainsi que des résumés mensuel et annuel prêts à l'emploi — pratique pour construire un rapport mensuel ou annuel.",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -1875,7 +1878,67 @@ const App = {
         });
       });
     });
-    const res = await window.api.exportXlsx({ audits, nonConformites });
+    // One row per (audit × question) — the raw material for building any
+    // pivot table in Excel (par mois, par domaine, par client...), since the
+    // "Audits" sheet above only carries aggregate scores.
+    const detail = [];
+    missions.forEach(m=>{
+      (m.grid||[]).forEach(catG=>{
+        const tpl = CATEGORIES_TEMPLATE.find(c=>c.id===catG.catId);
+        catG.criteres.forEach(c=>{
+          const label = c.custom ? c.label : ((CRITERES_INDEX[c.id]||{}).label || c.id);
+          let sdNom = '';
+          if(tpl && tpl.sousDomaines && !c.custom){
+            const tplCrit = tpl.criteres.find(cc=>cc.id===c.id);
+            const sd = tplCrit && tpl.sousDomaines.find(s=>s.id===tplCrit.sd);
+            if(sd) sdNom = sd.nom;
+          }
+          detail.push({
+            'Référence audit': m.reference,
+            'Entreprise': m.client||'',
+            "Date d'audit": m.dateAudit||'',
+            'Statut audit': STATUT_MISSION[m.statut]||m.statut,
+            'Domaine': tpl?tpl.nom:catG.catId,
+            'Sous-domaine': sdNom,
+            'Question': label,
+            'Réponse': c.note===null||c.note===undefined ? 'N/A' : NOTE_LABELS[c.note],
+            'Commentaire': c.comment||'',
+          });
+        });
+      });
+    });
+
+    // Ready-made monthly/annual rollups, grouped by date d'audit — so a
+    // report doesn't require knowing how to build an Excel PivotTable.
+    const buildRollup = (mode) => {
+      const byPeriod = {};
+      missions.forEach(m=>{
+        if(!m.dateAudit) return;
+        const key = mode==='month' ? m.dateAudit.slice(0,7) : m.dateAudit.slice(0,4);
+        if(!byPeriod[key]) byPeriod[key] = { count:0, scoreSum:0, scoreCount:0, ncOuvertes:0, ncTotales:0 };
+        const b = byPeriod[key];
+        b.count++;
+        const sc = computeScores(m);
+        if(sc.global!=null){ b.scoreSum += sc.global; b.scoreCount++; }
+        b.ncOuvertes += openNCCount(m);
+        b.ncTotales += (m.nonConformites||[]).length;
+      });
+      return Object.keys(byPeriod).sort().map(key=>({
+        [mode==='month' ? 'Mois' : 'Année']: key,
+        "Nombre d'audits": byPeriod[key].count,
+        'Score moyen (%)': byPeriod[key].scoreCount ? Math.round(byPeriod[key].scoreSum/byPeriod[key].scoreCount) : '',
+        'Non-conformités ouvertes': byPeriod[key].ncOuvertes,
+        'Non-conformités totales': byPeriod[key].ncTotales,
+      }));
+    };
+
+    const res = await window.api.exportXlsx({ sheets: [
+      { name: 'Audits', rows: audits },
+      { name: 'Non-conformités', rows: nonConformites },
+      { name: 'Détail par question', rows: detail },
+      { name: 'Résumé mensuel', rows: buildRollup('month') },
+      { name: 'Résumé annuel', rows: buildRollup('year') },
+    ]});
     if(res.canceled) return;
     if(!res.ok){ this.showToast(res.error || "Échec de l'export"); return; }
     this.showToast('Export enregistré : '+res.path);

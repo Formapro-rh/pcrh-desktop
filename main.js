@@ -15,6 +15,7 @@ const { autoUpdater } = require('electron-updater');
 
 const CONFIG_FILE = 'espace.json';
 const DATA_FILE = 'audits.json';
+const GRID_OVERRIDES_FILE = 'grille-personnalisee.json';
 const BACKUP_DIR_NAME = 'sauvegardes';
 const BACKUP_RETENTION_DAYS = 30;
 const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
@@ -87,6 +88,7 @@ function decryptJSON(raw, key) {
 /* ---------------- file helpers ---------------- */
 function configPath(folder) { return path.join(folder, CONFIG_FILE); }
 function dataPath(folder) { return path.join(folder, DATA_FILE); }
+function gridOverridesPath(folder) { return path.join(folder, GRID_OVERRIDES_FILE); }
 function backupDir(folder) { return path.join(folder, BACKUP_DIR_NAME); }
 
 async function atomicWrite(filePath, content) {
@@ -365,6 +367,32 @@ ipcMain.handle('settings:getApiKey', async () => {
 ipcMain.handle('settings:setApiKey', async (evt, key) => {
   writeSettings({ anthropicApiKey: String(key || '').trim() });
   return { ok: true };
+});
+
+/* ---------------- Grille de questions personnalisée par espace ----------------
+ * Not encrypted like audits.json — it holds only the questionnaire's own
+ * text and reference links, never client data. Missing file = no
+ * customization yet (not an error): the app falls back to the built-in
+ * grid. */
+ipcMain.handle('grid:get', async () => {
+  try {
+    requireSession();
+    const raw = await fsp.readFile(gridOverridesPath(session.folder), 'utf8');
+    return { ok: true, overrides: JSON.parse(raw) };
+  } catch (e) {
+    return { ok: true, overrides: null };
+  }
+});
+
+ipcMain.handle('grid:save', async (evt, overrides) => {
+  try {
+    requireSession();
+    const payload = Object.assign({}, overrides, { version: 1, updatedAt: new Date().toISOString() });
+    await atomicWrite(gridOverridesPath(session.folder), JSON.stringify(payload, null, 2));
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.code === 'not_unlocked' ? 'Session verrouillée.' : e.message };
+  }
 });
 
 /* ---------------- "Quoi de neuf" : version vue pour la dernière fois sur ce poste ---------------- */

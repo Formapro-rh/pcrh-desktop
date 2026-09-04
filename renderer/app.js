@@ -895,13 +895,61 @@ function sousDomaineGroups(cat){
 }
 
 /** Flat index of every question in the grid, by criterion id, for global search
- *  ("does this mission contain a question/answer matching the search text?"). */
+ *  ("does this mission contain a question/answer matching the search text?").
+ *  Rebuilt (not just built once) whenever the grid changes — see
+ *  rebuildCriteresIndex() below. */
 const CRITERES_INDEX = {};
-CATEGORIES_TEMPLATE.forEach(cat=>{
-  cat.criteres.forEach(crit=>{
-    CRITERES_INDEX[crit.id] = { label: crit.label, catNom: cat.nom, catId: cat.id };
+function rebuildCriteresIndex(){
+  Object.keys(CRITERES_INDEX).forEach(k=>{ delete CRITERES_INDEX[k]; });
+  CATEGORIES_TEMPLATE.forEach(cat=>{
+    cat.criteres.forEach(crit=>{
+      CRITERES_INDEX[crit.id] = { label: crit.label, catNom: cat.nom, catId: cat.id };
+    });
   });
-});
+}
+rebuildCriteresIndex();
+
+/** Pristine snapshot of the built-in grid, captured once at load — the
+ *  starting point every time grid overrides are (re)applied, so edits are
+ *  never compounded onto an already-edited copy. */
+const BASE_CATEGORIES_TEMPLATE = JSON.parse(JSON.stringify(CATEGORIES_TEMPLATE));
+
+/** Merges this space's grid customizations (edited/added/removed questions,
+ *  stored in the shared folder — see Store.loadGridOverrides) onto a fresh
+ *  copy of the base grid, then mutates CATEGORIES_TEMPLATE/CRITERES_INDEX
+ *  *in place* so every existing reference to them (the whole app just reads
+ *  the `CATEGORIES_TEMPLATE` binding, never a separately-captured copy)
+ *  picks up the change without needing to be threaded through as a
+ *  parameter. Safe to call repeatedly (e.g. after every edit) — always
+ *  recomputed from the untouched base, never additive. */
+function applyGridOverrides(overrides){
+  const o = overrides || {};
+  const removed = new Set(o.removedQuestionIds||[]);
+  const edits = o.questionEdits||{};
+  const added = o.addedQuestions||[];
+
+  const next = JSON.parse(JSON.stringify(BASE_CATEGORIES_TEMPLATE));
+  next.forEach(cat=>{
+    cat.criteres = cat.criteres
+      .filter(c=>!removed.has(c.id))
+      .map(c=>{
+        const e = edits[c.id];
+        if(!e) return c;
+        const merged = Object.assign({}, c);
+        if(e.label!=null) merged.label = e.label;
+        if(e.refs!=null) merged.refs = e.refs;
+        return merged;
+      });
+  });
+  added.forEach(q=>{
+    const cat = next.find(c=>c.id===q.catId);
+    if(cat) cat.criteres.push({ id:q.id, label:q.label, sd:q.sd||undefined, refs:q.refs||[] });
+  });
+
+  CATEGORIES_TEMPLATE.length = 0;
+  CATEGORIES_TEMPLATE.push(...next);
+  rebuildCriteresIndex();
+}
 
 /** Small "§" button shown next to a question that has legal references (crit.refs).
  *  Clicking it opens a dropdown of article links; clicking a link opens it in the
@@ -1267,6 +1315,9 @@ const CHANGELOG = {
   '1.14.0': [
     "Interface adaptée au tactile sur tablette : boutons, cases à cocher et champs agrandis, boutons de notation sur leur propre ligne — sans aucun changement sur ordinateur (souris/trackpad).",
   ],
+  '1.15.0': [
+    "Nouvelle page « Gérer la grille des questions » (Paramètres) : modifier le texte d'une question, ses liens de référence légale, ou ajouter/retirer une question — sans passer par une mise à jour de l'application.",
+  ],
 };
 
 /** Simple x.y.z version comparator: negative if a<b, 0 if equal, positive if a>b. */
@@ -1293,6 +1344,7 @@ const App = {
     showSettings:false, settingsForm:null,
     showCreateSpace:false, newSpaceForm:null,
     compareA:null, compareB:null,
+    gridOverrides:null, gridOpenCats:new Set(), gridEditingId:null, confirmRemoveQuestion:null,
     openRefFor:null,
     reportGenBusy:false,
     whatsNew:null,
@@ -1349,10 +1401,116 @@ const App = {
     this.state.auth.identifiant = cur.identifiant;
     this.state.auth.error = '';
     this.state.view = 'dashboard';
+    await this.loadGridOverrides();
     await this.loadMissions();
     this.startPolling();
     await this.checkWhatsNew();
     this.notifyOverdueOnce();
+    this.render();
+  },
+
+  /** Loads this space's grid customizations (if any) from the shared folder
+   *  and applies them on top of the built-in questionnaire, before any
+   *  mission is created or rendered. A missing file or a read failure just
+   *  means "no customization yet" — never blocks login. */
+  async loadGridOverrides(){
+    let overrides = { questionEdits:{}, addedQuestions:[], removedQuestionIds:[] };
+    try{
+      const res = await window.api.getGridOverrides();
+      if(res.ok && res.overrides) overrides = res.overrides;
+    }catch(e){ /* fall back to the built-in grid */ }
+    this.state.gridOverrides = overrides;
+    applyGridOverrides(overrides);
+  },
+  /** Persists this space's current grid overrides and re-applies them —
+   *  called after every edit made in the grid editor. */
+  async saveGridOverrides(){
+    applyGridOverrides(this.state.gridOverrides);
+    await window.api.saveGridOverrides(this.state.gridOverrides);
+  },
+
+  /* ---- grid editor ("Gérer la grille") ---- */
+  openGridEditor(){
+    this.state.showSettings = false;
+    this.state.gridOpenCats = new Set();
+    this.state.gridEditingId = null;
+    this.state.view = 'grid';
+    window.scrollTo(0,0);
+    this.render();
+  },
+  toggleGridCat(catId){
+    if(this.state.gridOpenCats.has(catId)) this.state.gridOpenCats.delete(catId); else this.state.gridOpenCats.add(catId);
+    this.render();
+  },
+  isAddedQuestion(critId){
+    return this.state.gridOverrides.addedQuestions.some(q=>q.id===critId);
+  },
+  startEditQuestion(critId){
+    this.state.gridEditingId = critId;
+    this.render();
+    const el = document.getElementById('gridedit-'+critId);
+    if(el){ el.focus(); }
+  },
+  cancelEditQuestion(){ this.state.gridEditingId = null; this.render(); },
+  async saveQuestionLabel(critId, newLabel){
+    newLabel = (newLabel||'').trim();
+    if(!newLabel) return;
+    const added = this.state.gridOverrides.addedQuestions.find(q=>q.id===critId);
+    if(added){
+      added.label = newLabel;
+    } else {
+      this.state.gridOverrides.questionEdits[critId] = Object.assign({}, this.state.gridOverrides.questionEdits[critId], { label: newLabel });
+    }
+    this.state.gridEditingId = null;
+    await this.saveGridOverrides();
+    this.showToast('Question modifiée');
+    this.render();
+  },
+  async addQuestionRef(critId, label, url){
+    label = (label||'').trim(); url = (url||'').trim();
+    if(!label || !url) { this.showToast('Indiquez un libellé et un lien'); return; }
+    const info = CATEGORIES_TEMPLATE.flatMap(c=>c.criteres).find(c=>c.id===critId);
+    const currentRefs = (info&&info.refs) || [];
+    const nextRefs = currentRefs.concat([{ label, url }]);
+    const added = this.state.gridOverrides.addedQuestions.find(q=>q.id===critId);
+    if(added) added.refs = nextRefs;
+    else this.state.gridOverrides.questionEdits[critId] = Object.assign({}, this.state.gridOverrides.questionEdits[critId], { refs: nextRefs });
+    await this.saveGridOverrides();
+    this.showToast('Lien ajouté');
+    this.render();
+  },
+  async removeQuestionRef(critId, idx){
+    const info = CATEGORIES_TEMPLATE.flatMap(c=>c.criteres).find(c=>c.id===critId);
+    const currentRefs = (info&&info.refs) || [];
+    const nextRefs = currentRefs.filter((_,i)=>i!==idx);
+    const added = this.state.gridOverrides.addedQuestions.find(q=>q.id===critId);
+    if(added) added.refs = nextRefs;
+    else this.state.gridOverrides.questionEdits[critId] = Object.assign({}, this.state.gridOverrides.questionEdits[critId], { refs: nextRefs });
+    await this.saveGridOverrides();
+    this.render();
+  },
+  async addGridQuestion(catId, sd, label){
+    label = (label||'').trim();
+    if(!label) return;
+    this.state.gridOverrides.addedQuestions.push({ id: uid('gtpl'), catId, sd: sd||undefined, label, refs: [] });
+    await this.saveGridOverrides();
+    this.showToast('Question ajoutée à la grille');
+    this.render();
+  },
+  requestRemoveGridQuestion(critId){ this.state.confirmRemoveQuestion = critId; this.render(); },
+  cancelRemoveGridQuestion(){ this.state.confirmRemoveQuestion = null; this.render(); },
+  async confirmRemoveGridQuestion(){
+    const critId = this.state.confirmRemoveQuestion;
+    this.state.confirmRemoveQuestion = null;
+    const added = this.state.gridOverrides.addedQuestions.findIndex(q=>q.id===critId);
+    if(added>=0){
+      this.state.gridOverrides.addedQuestions.splice(added,1);
+    } else {
+      if(!this.state.gridOverrides.removedQuestionIds.includes(critId)) this.state.gridOverrides.removedQuestionIds.push(critId);
+      delete this.state.gridOverrides.questionEdits[critId];
+    }
+    await this.saveGridOverrides();
+    this.showToast('Question retirée de la grille');
     this.render();
   },
 
@@ -2037,10 +2195,12 @@ const App = {
             this.state.view==='report' ? this.renderReport() :
             this.state.view==='clients' ? this.renderClients() :
             this.state.view==='client' ? this.renderClientDetail() :
+            this.state.view==='grid' ? this.renderGridEditor() :
             this.state.view==='trash' ? this.renderTrash() : ''}
         </div>
       </div>
       ${this.state.confirm ? this.renderConfirm() : ''}
+      ${this.state.confirmRemoveQuestion ? this.renderConfirmRemoveQuestion() : ''}
       ${this.state.conflict ? this.renderConflict() : ''}
       ${this.state.showSettings ? this.renderSettings() : ''}
       ${this.state.showCreateSpace ? this.renderCreateSpaceModal() : ''}
@@ -2079,6 +2239,22 @@ const App = {
         <div class="row">
           <button class="btn" onclick="App.cancelConfirm()">Annuler</button>
           <button class="btn danger" onclick="${isPurge?'App.confirmPurge()':'App.confirmDelete()'}">${icon('trash',15)} ${isPurge?'Supprimer définitivement':'Mettre à la corbeille'}</button>
+        </div>
+      </div>
+    </div>`;
+  },
+
+  renderConfirmRemoveQuestion(){
+    const critId = this.state.confirmRemoveQuestion;
+    const info = CRITERES_INDEX[critId];
+    return `<div class="modal-back" onclick="if(event.target===this) App.cancelRemoveGridQuestion()">
+      <div class="modal">
+        <h3>Retirer cette question de la grille ?</h3>
+        <p>« ${esc(info?info.label:critId)} »</p>
+        <p>Elle n'apparaîtra plus dans les nouveaux audits. Les audits déjà réalisés qui y avaient déjà répondu conservent cette réponse dans leur score, mais elle ne s'affichera plus à l'écran.</p>
+        <div class="row">
+          <button class="btn" onclick="App.cancelRemoveGridQuestion()">Annuler</button>
+          <button class="btn danger" onclick="App.confirmRemoveGridQuestion()">${icon('trash',15)} Retirer</button>
         </div>
       </div>
     </div>`;
@@ -2172,6 +2348,12 @@ const App = {
             <button class="btn primary" ${f.apiKeyBusy?'disabled':''} onclick="App.saveApiKey()">${f.apiKeyBusy?'Enregistrement…':'Enregistrer la clé'}</button>
             ${f.apiKeySaved ? `<span style="color:var(--good); font-size:12.5px;">✓ Enregistrée</span>` : ''}
           </div>
+        </div>
+
+        <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--border);">
+          <div style="font-weight:600; font-size:13px; margin-bottom:4px;">Grille de questions</div>
+          <div class="field-hint" style="margin-bottom:10px;">Modifier le texte d'une question, ses liens de référence légale, ou ajouter/retirer une question — pour tous les nouveaux audits de cet espace.</div>
+          <button class="btn" onclick="App.openGridEditor()">${icon('list')} Gérer la grille des questions…</button>
         </div>
 
         <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--border);">
@@ -2628,6 +2810,76 @@ const App = {
         </div>
       </div>
     `;
+  },
+
+  /* ---------- Grid editor ("Gérer la grille") ---------- */
+  renderGridEditor(){
+    return `
+      <div class="pagehead">
+        <div class="hactions" style="margin-bottom:8px;">
+          <button class="btn ghost" onclick="App.setView('dashboard')">${icon('back',15)} Retour</button>
+        </div>
+        <div>
+          <h1>Gérer la grille des questions</h1>
+          <div class="lede">Ces modifications s'appliquent à tous les nouveaux audits de cet espace. Un audit déjà créé garde la grille telle qu'elle était au moment de sa création.</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        ${CATEGORIES_TEMPLATE.map(cat=>{
+          const open = this.state.gridOpenCats.has(cat.id);
+          return `<div class="cat-block">
+            <div class="cat-head ${open?'open':''}" onclick="App.toggleGridCat('${cat.id}')">
+              <div class="left">${icon('chev',15)}<h3>${esc(cat.nom)}</h3><span class="n">${cat.criteres.length} question${cat.criteres.length>1?'s':''}</span></div>
+            </div>
+            ${open ? `<div class="cat-body">
+              ${sousDomaineGroups(cat).map(group=>`
+                ${group.nom ? `<div class="sd-head">${esc(group.nom)}</div>` : ''}
+                ${group.criteres.map(crit=>this.renderGridQuestionRow(crit)).join('')}
+                <div class="crit-row" style="align-items:center;">
+                  <div class="crit-main">
+                    <input type="text" class="crit-comment" id="newgq-${cat.id}-${group.sd||'none'}" placeholder="Ajouter une question dans ${esc(group.nom||cat.nom)}…" onkeydown="if(event.key==='Enter'){ App.addGridQuestion('${cat.id}', ${group.sd?`'${group.sd}'`:'null'}, this.value); this.value=''; }"/>
+                  </div>
+                  <button class="btn ghost" onclick="const el=document.getElementById('newgq-${cat.id}-${group.sd||'none'}'); App.addGridQuestion('${cat.id}', ${group.sd?`'${group.sd}'`:'null'}, el.value); el.value='';">${icon('plus',15)} Ajouter</button>
+                </div>
+              `).join('')}
+            </div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>
+    `;
+  },
+
+  renderGridQuestionRow(crit){
+    const editing = this.state.gridEditingId === crit.id;
+    const isAdded = this.isAddedQuestion(crit.id);
+    return `<div class="crit-row">
+      <div class="crit-main">
+        ${editing ? `
+          <div style="display:flex; gap:8px; align-items:flex-start; margin-bottom:7px;">
+            <input type="text" id="gridedit-${crit.id}" class="crit-comment" style="flex:1;" value="${esc(crit.label)}" onkeydown="if(event.key==='Enter'){ App.saveQuestionLabel('${crit.id}', this.value); } if(event.key==='Escape'){ App.cancelEditQuestion(); }"/>
+            <button class="btn ghost" title="Enregistrer" onclick="App.saveQuestionLabel('${crit.id}', document.getElementById('gridedit-${crit.id}').value)">${icon('pencil',13)}</button>
+            <button class="btn ghost" title="Annuler" onclick="App.cancelEditQuestion()">${icon('x',13)}</button>
+          </div>
+        ` : `
+          <div class="crit-label">${esc(crit.label)}${isAdded?' <span style="font-size:10.5px; color:var(--accent-ink); background:var(--accent-soft); padding:1px 6px; border-radius:5px; font-weight:600;">ajoutée</span>':''}
+            <button class="btn ghost" title="Modifier le texte" style="padding:2px 6px; margin-left:6px;" onclick="App.startEditQuestion('${crit.id}')">${icon('pencil',12)}</button>
+          </div>
+        `}
+        <div class="att-row">
+          ${(crit.refs||[]).map((r,i)=>`<span class="att-chip" title="${esc(r.url)}">
+            <a href="#" onclick="event.preventDefault(); App.openRefLink('${jsAttr(r.url)}');">${icon('scale',12)} ${esc(r.label)}</a>
+            <button type="button" class="att-x" title="Retirer ce lien" onclick="App.removeQuestionRef('${crit.id}', ${i})">${icon('x',10)}</button>
+          </span>`).join('')}
+        </div>
+        <div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">
+          <input type="text" id="reflabel-${crit.id}" class="crit-comment" style="max-width:180px;" placeholder="Libellé du lien"/>
+          <input type="text" id="refurl-${crit.id}" class="crit-comment" style="max-width:260px;" placeholder="https://…"/>
+          <button class="btn ghost" onclick="App.addQuestionRef('${crit.id}', document.getElementById('reflabel-${crit.id}').value, document.getElementById('refurl-${crit.id}').value); document.getElementById('reflabel-${crit.id}').value=''; document.getElementById('refurl-${crit.id}').value='';">${icon('plus',13)} Lien</button>
+        </div>
+      </div>
+      <button class="btn ghost" title="Retirer cette question" onclick="App.requestRemoveGridQuestion('${crit.id}')">${icon('trash',14)}</button>
+    </div>`;
   },
 
   /* ---------- Form ---------- */

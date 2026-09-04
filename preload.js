@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('api', {
   saveMission: (payload) => ipcRenderer.invoke('data:save', payload),
   deleteMission: (id) => ipcRenderer.invoke('data:delete', id),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
+  getGridOverrides: () => ipcRenderer.invoke('grid:get'),
+  saveGridOverrides: (overrides) => ipcRenderer.invoke('grid:save', overrides),
   getApiKey: () => ipcRenderer.invoke('settings:getApiKey'),
   setApiKey: (key) => ipcRenderer.invoke('settings:setApiKey', key),
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),

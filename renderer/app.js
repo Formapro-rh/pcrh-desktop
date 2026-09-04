@@ -1123,6 +1123,17 @@ function summarizeMissionChanges(oldMission, newMission){
   if(naAdded) parts.push(`${naAdded} domaine${naAdded>1?'s':''} marqué${naAdded>1?'s':''} non applicable`);
   if(naRemoved) parts.push(`${naRemoved} domaine${naRemoved>1?'s':''} redevenu${naRemoved>1?'s':''} applicable`);
 
+  let sdNaAdded=0, sdNaRemoved=0;
+  (newMission.grid||[]).forEach(c=>{
+    const o = oldCatById[c.catId];
+    const oldSd = new Set((o&&o.naSousDomaines)||[]);
+    const newSd = new Set(c.naSousDomaines||[]);
+    newSd.forEach(sd=>{ if(!oldSd.has(sd)) sdNaAdded++; });
+    oldSd.forEach(sd=>{ if(!newSd.has(sd)) sdNaRemoved++; });
+  });
+  if(sdNaAdded) parts.push(`${sdNaAdded} sous-domaine${sdNaAdded>1?'s':''} marqué${sdNaAdded>1?'s':''} non applicable`);
+  if(sdNaRemoved) parts.push(`${sdNaRemoved} sous-domaine${sdNaRemoved>1?'s':''} redevenu${sdNaRemoved>1?'s':''} applicable`);
+
   const oldNcById = {};
   (oldMission.nonConformites||[]).forEach(n=>{ oldNcById[n.id]=n; });
   const newNcIds = new Set((newMission.nonConformites||[]).map(n=>n.id));
@@ -1149,25 +1160,44 @@ function summarizeMissionChanges(oldMission, newMission){
 }
 function cloneMission(m){ return JSON.parse(JSON.stringify(m)); }
 
+/** Criteria of catG that actually count toward scoring: excludes any
+ *  criterion belonging to a sous-domaine listed in catG.naSousDomaines
+ *  (custom, per-audit questions never belong to a sous-domaine, so they're
+ *  never excluded this way). tpl is catG's CATEGORIES_TEMPLATE entry. */
+function applicableCriteresOf(catG, tpl){
+  const excludedSd = catG.naSousDomaines;
+  if(!excludedSd || excludedSd.length===0) return catG.criteres;
+  const excluded = new Set(excludedSd);
+  return catG.criteres.filter(c=>{
+    if(c.custom) return true;
+    const tplCrit = tpl && tpl.criteres.find(tc=>tc.id===c.id);
+    return !(tplCrit && excluded.has(tplCrit.sd));
+  });
+}
 function computeScores(mission){
   // A domain marked "non applicable" for this audit (catG.na) is excluded
   // entirely from scoring — its questions still exist and can carry notes,
-  // but neither its own score nor the global score counts them.
+  // but neither its own score nor the global score counts them. A single
+  // sous-domaine can be excluded the same way (catG.naSousDomaines) without
+  // taking out the whole domain.
   const catScores = mission.grid.map(catG=>{
     const tpl = CATEGORIES_TEMPLATE.find(c=>c.id===catG.catId);
     if(catG.na){
       return { catId: catG.catId, nom: tpl?tpl.nom:catG.catId, pct: null, count: 0, total: catG.criteres.length, na: true };
     }
+    const applicable = applicableCriteresOf(catG, tpl);
     let sum=0, count=0;
-    catG.criteres.forEach(c=>{ if(c.note===0||c.note===1||c.note===2){ sum+=c.note; count++; } });
+    applicable.forEach(c=>{ if(c.note===0||c.note===1||c.note===2){ sum+=c.note; count++; } });
     const pct = count>0 ? Math.round((sum/(count*2))*100) : null;
-    return { catId: catG.catId, nom: tpl?tpl.nom:catG.catId, pct, count, total: catG.criteres.length };
+    return { catId: catG.catId, nom: tpl?tpl.nom:catG.catId, pct, count, total: applicable.length };
   });
   let sum=0, count=0, total=0;
   mission.grid.forEach(catG=>{
     if(catG.na) return;
-    total += catG.criteres.length;
-    catG.criteres.forEach(c=>{ if(c.note===0||c.note===1||c.note===2){ sum+=c.note; count++; } });
+    const tpl = CATEGORIES_TEMPLATE.find(c=>c.id===catG.catId);
+    const applicable = applicableCriteresOf(catG, tpl);
+    total += applicable.length;
+    applicable.forEach(c=>{ if(c.note===0||c.note===1||c.note===2){ sum+=c.note; count++; } });
   });
   const global = count>0 ? Math.round((sum/(count*2))*100) : null;
   return { catScores, global, scored: count, total };
@@ -1337,6 +1367,9 @@ const CHANGELOG = {
   ],
   '1.20.0': [
     "Logo du cabinet (Paramètres) : affiché dans l'application et intégré automatiquement aux rapports PDF et Word transmis aux clients.",
+  ],
+  '1.21.0': [
+    "Un sous-domaine peut désormais être marqué « Non applicable » pour un audit donné (en plus du domaine entier) — exclu du score sans perdre les réponses déjà saisies, réversible à tout moment.",
   ],
 };
 
@@ -1780,6 +1813,17 @@ const App = {
     const cat = this.state.draft.grid.find(c=>c.catId===catId);
     if(!cat) return;
     cat.na = !cat.na;
+    this.render();
+  },
+  /** Same idea as toggleCategoryNA but scoped to a single sous-domaine —
+   *  for when only part of a domain doesn't apply to this audit. */
+  toggleSousDomaineNA(catId, sdId, evt){
+    if(evt) evt.stopPropagation();
+    const cat = this.state.draft.grid.find(c=>c.catId===catId);
+    if(!cat) return;
+    cat.naSousDomaines = cat.naSousDomaines || [];
+    const idx = cat.naSousDomaines.indexOf(sdId);
+    if(idx>=0) cat.naSousDomaines.splice(idx,1); else cat.naSousDomaines.push(sdId);
     this.render();
   },
   toggleCat(catId){
@@ -3250,11 +3294,19 @@ const App = {
             </div>
             ${open ? `<div class="cat-body">
               ${catG.na ? `<div class="divider-note" style="margin:6px 0 10px; color:var(--ink-2);">Domaine marqué non applicable pour cet audit — exclu du score. Les réponses ci-dessous restent visibles mais ne comptent pas.</div>` : ''}
-              ${sousDomaineGroups(cat).map(group=>`
-                ${group.nom ? `<div class="sd-head">${esc(group.nom)}</div>` : ''}
+              ${sousDomaineGroups(cat).map(group=>{
+                const sdExcluded = group.sd && (catG.naSousDomaines||[]).includes(group.sd);
+                return `
+                ${group.nom ? `<div class="sd-head" style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+                  <span>${esc(group.nom)}</span>
+                  <label class="na-toggle" style="text-transform:none; letter-spacing:normal; font-weight:500; color:${sdExcluded?'var(--accent-ink)':'inherit'};" title="Exclure ce sous-domaine du score de cet audit">
+                    <input type="checkbox" ${sdExcluded?'checked':''} onchange="App.toggleSousDomaineNA('${cat.id}','${group.sd}')"/> Non applicable
+                  </label>
+                </div>` : ''}
+                ${sdExcluded ? `<div class="divider-note" style="margin:2px 0 8px; color:var(--ink-2);">Sous-domaine marqué non applicable pour cet audit — exclu du score.</div>` : ''}
                 ${group.criteres.map(crit=>{
                   const val = catG.criteres.find(c=>c.id===crit.id);
-                  return `<div class="crit-row">
+                  return `<div class="crit-row" style="${sdExcluded?'opacity:0.55;':''}">
                     <div class="crit-main">
                       <div class="crit-label">${esc(crit.label)}${renderRefBtn(crit)}</div>
                       <input class="crit-comment" type="text" placeholder="Commentaire (optionnel)" value="${esc(val.comment)}" oninput="App.setComment('${cat.id}','${crit.id}', this.value)"/>
@@ -3268,7 +3320,8 @@ const App = {
                     </div>
                   </div>`;
                 }).join('')}
-              `).join('')}
+              `;
+              }).join('')}
               ${catG.criteres.some(c=>c.custom) ? `<div class="sd-head">Questions ajoutées pour cet audit</div>` : ''}
               ${catG.criteres.filter(c=>c.custom).map(c=>`
                 <div class="crit-row">
@@ -3426,7 +3479,7 @@ const App = {
               </div>
               <div class="report-crit-detail">
                 ${sousDomaineGroups(cat).map(group=>`
-                  ${group.nom ? `<div class="sd-head">${esc(group.nom)}</div>` : ''}
+                  ${group.nom ? `<div class="sd-head">${esc(group.nom)}${group.sd&&(catG.naSousDomaines||[]).includes(group.sd)?' <span style="font-weight:500; text-transform:none; letter-spacing:normal; opacity:0.75;">(non applicable)</span>':''}</div>` : ''}
                   ${group.criteres.map(crit=>{
                     const val = catG.criteres.find(c=>c.id===crit.id);
                     const noteTxt = val.note===null ? 'N/A' : NOTE_LABELS[val.note];
